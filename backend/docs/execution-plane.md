@@ -12,6 +12,7 @@ The Execution Plane comprises the following logical components:
 graph TB
     subgraph ControlPlane["Control Plane"]
         WE["Workflow Engine"]
+        TE["Task Executor"]
         R["Reconciler"]
         P["Provisioner"]
         D["Dispatcher"]
@@ -32,21 +33,40 @@ graph TB
         W3["Worker"]
     end
 
-    WE -->|"task node ready"| R
-    R -->|"selected pool"| P
+    WE -->|"execute_task(task definition)"| TE
+    TE -->|"resolve pool"| R
     RM -->|"capacity + health"| R
+    R -->|"selected pool"| TE
+    TE -->|"provision worker"| P
     EER -->|"container image"| P
     IP -->|"isolation constraints"| P
-    P -->|"worker created"| D
+    P -->|"worker created"| TE
+    TE -->|"dispatch task"| D
     CP -->|"credentials"| D
-    D -->|"dispatch task"| W1
-    D -->|"dispatch task"| W3
+    D -->|"run task"| W1
+    D -->|"run task"| W3
+    TE -.->|"task result"| WE
     LM1 --- W1
     LM1 --- W2
     LM2 --- W3
     RM -.->|"health probes"| LM1
     RM -.->|"health probes"| LM2
 ```
+
+### Task Executor
+
+The single entry point into the Execution Plane. The Workflow Engine calls `execute_task(task_definition)` and receives a result — it has no knowledge of pools, provisioning, or dispatch internals. The Task Executor owns the full orchestration pipeline: Reconciler, Provisioner, Dispatcher, and cleanup.
+
+**Responsibilities:**
+- Accept a task definition from the Workflow Engine (task payload, affinity labels, workload type, connectivity requirements, EE reference)
+- Orchestrate the execution pipeline: reconcile a pool, provision a worker, dispatch the task, collect the result
+- Handle provisioning failures by retrying with fallback pools from the Reconciler's ranked list
+- Return the task result (or a structured error) to the Workflow Engine
+- Ensure worker cleanup occurs regardless of task outcome (delegates to the Lifecycle Manager)
+
+**Interface:**
+- `execute_task(task_definition) -> task_result` — the only method the Workflow Engine calls
+- The task definition includes: task payload (inputs, parameters), affinity labels, workload type (action/agentic), connectivity requirements, EE image reference, credential references, resource requirements (CPU, memory, timeout)
 
 ### Worker
 
@@ -118,7 +138,7 @@ Delivers the workflow task payload to a provisioned Worker and manages the task 
 - Inject credentials into the Worker via the Credential Provider
 - Deliver the task payload (inputs, parameters, Execution Environment configuration)
 - Monitor task execution (heartbeats, timeouts)
-- Collect task output and relay it back to the Workflow Engine
+- Collect task output and return it to the Task Executor
 - Handle task failure, retry, and cancellation signals
 
 ### Execution Environment (EE) Registry
@@ -186,11 +206,12 @@ Manages Workers from creation to cleanup within a Worker Pool. Operates as a per
 
 ### Task Execution: Happy Path
 
-The complete flow from a workflow task node becoming ready to execute, through worker selection, provisioning, and dispatch, to result delivery.
+The complete flow from a workflow task node becoming ready to execute, through worker selection, provisioning, and dispatch, to result delivery. The Workflow Engine calls `execute_task` on the Task Executor and receives a result — it has no visibility into the internal pipeline.
 
 ```mermaid
 sequenceDiagram
     participant WE as Workflow Engine
+    participant TE as Task Executor
     participant R as Reconciler
     participant RM as Resource Monitor
     participant IP as Isolation Policy
@@ -201,7 +222,11 @@ sequenceDiagram
     participant LM as Lifecycle Manager
     participant W as Worker
 
-    WE->>R: task node ready (labels, workload type, connectivity requirements)
+    WE->>TE: execute_task(task definition)
+
+    Note over TE: Task definition includes:<br/>payload, affinity labels, workload type,<br/>connectivity requirements, EE reference
+
+    TE->>R: resolve pool (labels, workload type, connectivity)
 
     R->>IP: get constraints for workload type
     IP-->>R: isolation constraints, eligible pool criteria
@@ -211,9 +236,9 @@ sequenceDiagram
 
     Note over R: Match task labels + connectivity<br/>+ isolation constraints<br/>against pool labels + metadata.<br/>Rank eligible pools.
 
-    R-->>WE: selected Worker Pool
+    R-->>TE: ranked pool list [Pool A, Pool B]
 
-    WE->>P: provision worker in selected pool
+    TE->>P: provision worker in Pool A
 
     P->>EER: resolve EE image for task
     EER-->>P: OCI image reference
@@ -224,9 +249,9 @@ sequenceDiagram
     P->>LM: create worker (image, resources, security context)
     LM-->>P: worker created, worker ID
 
-    P-->>WE: worker provisioned (worker ID)
+    P-->>TE: worker provisioned (worker ID)
 
-    WE->>D: dispatch task to worker
+    TE->>D: dispatch task to worker
 
     D->>CP: resolve credentials for task node
     CP->>IP: validate credential access for workload type
@@ -238,24 +263,26 @@ sequenceDiagram
     W-->>D: task running (heartbeats)
     W-->>D: task completed (output)
 
-    D-->>WE: task result
+    D-->>TE: task result
 
-    WE->>LM: release worker
+    TE->>LM: release worker
     LM->>W: terminate + cleanup
+
+    TE-->>WE: task result
 ```
 
 ### Reconciliation: Pool Selection Logic
 
-Detail of how the Reconciler evaluates candidate pools.
+Detail of how the Reconciler evaluates candidate pools. The Task Executor calls the Reconciler; the Workflow Engine is not involved.
 
 ```mermaid
 sequenceDiagram
-    participant WE as Workflow Engine
+    participant TE as Task Executor
     participant R as Reconciler
     participant RM as Resource Monitor
     participant IP as Isolation Policy
 
-    WE->>R: resolve pool for task node
+    TE->>R: resolve pool (labels, workload type, connectivity)
 
     Note over R: Task node specifies:<br/>- affinity labels: {gpu: "true", region: "eu-west"}<br/>- workload type: agentic<br/>- connectivity: needs access to vault.internal:8200
 
@@ -273,35 +300,40 @@ sequenceDiagram
 
     Note over R: Step 4 — Capacity:<br/>Pool A: 7 slots available ✓
 
-    R-->>WE: Pool A selected
+    R-->>TE: ranked list [Pool A]
 ```
 
 ### Provisioning Failure and Fallback
 
-What happens when provisioning fails in the selected pool.
+What happens when provisioning fails in the selected pool. The Task Executor handles the retry logic internally — the Workflow Engine is unaware of the fallback.
 
 ```mermaid
 sequenceDiagram
     participant WE as Workflow Engine
+    participant TE as Task Executor
     participant R as Reconciler
     participant P as Provisioner
     participant LM as Lifecycle Manager
     participant RM as Resource Monitor
 
-    WE->>R: resolve pool for task node
-    R-->>WE: Pool A (primary), Pool B (fallback)
+    WE->>TE: execute_task(task definition)
 
-    WE->>P: provision worker in Pool A
+    TE->>R: resolve pool
+    R-->>TE: ranked list [Pool A, Pool B]
+
+    TE->>P: provision worker in Pool A
     P->>LM: create worker
     LM-->>P: failure (image pull error)
-    P-->>WE: provisioning failed
+    P-->>TE: provisioning failed
 
-    Note over WE: Retry with fallback pool
+    Note over TE: Retry with next pool in ranked list
 
-    WE->>P: provision worker in Pool B
+    TE->>P: provision worker in Pool B
     P->>LM: create worker
     LM-->>P: worker created
-    P-->>WE: worker provisioned
+    P-->>TE: worker provisioned
+
+    Note over TE: Continue with dispatch...
 
     Note over RM: Resource Monitor detects<br/>Pool A image pull failures,<br/>marks pool as degraded
 ```
@@ -457,6 +489,7 @@ Per the July 2026 planning decisions ([ANSTRAT-1803](https://redhat.atlassian.ne
 
 | Component | MVP Scope |
 |---|---|
+| Task Executor | Single `execute_task` entry point for the Workflow Engine; orchestrates the full pipeline |
 | Worker | OpenShift pod within the control plane cluster |
 | Worker Pool | Single on-cluster pool (same namespace or dedicated namespace) |
 | Reconciler | Global affinity only; project/workflow/node-level affinity deferred |
