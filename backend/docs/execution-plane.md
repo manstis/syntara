@@ -202,6 +202,202 @@ Manages Workers from creation to cleanup within a Worker Pool. Operates as a per
 - Handle Worker failures (detect unresponsive Workers, mark as failed, trigger re-provisioning if policy allows)
 - Report pool state to the Resource Monitor
 
+## Worker Pool Registration
+
+The sections above describe **runtime** behaviour — how the Task Executor selects a registered pool, provisions a worker, and dispatches a task. This section covers the **registration** lifecycle: how a new Worker Pool is introduced to the Execution Plane, bootstrapped on its target infrastructure, and made available to the Reconciler.
+
+Registration is an administrator action, performed once per cluster. It is separate from, and prerequisite to, runtime task execution.
+
+### Registration Model
+
+```mermaid
+graph TB
+    Admin["Administrator"]
+    RP["Registration Provider"]
+    CB["Cluster Bootstrapper"]
+    PR["Pool Registry"]
+    R["Reconciler"]
+
+    Admin -->|"register pool<br/>(type, platform, endpoint, labels)"| RP
+    RP -->|"bootstrap cluster"| CB
+    CB -->|"configure infrastructure"| Cluster["Target Cluster"]
+    RP -->|"store registration"| PR
+    PR -->|"registered pools"| R
+
+    style PR fill:#e8f4fd
+    style R fill:#e8f4fd
+```
+
+### Registration Provider
+
+Accepts a pool registration request from an administrator and orchestrates the registration lifecycle: validate the request, bootstrap the target infrastructure, and store the registration in the Pool Registry.
+
+**Responsibilities:**
+- Validate the registration request (endpoint reachability, credentials, platform compatibility)
+- Delegate infrastructure bootstrapping to the Cluster Bootstrapper
+- Store the completed registration in the Pool Registry
+- Support updating an existing registration (e.g. changing labels, resizing capacity)
+- Support deregistering a pool (drain workers, tear down bootstrapped resources, remove from registry)
+
+**Registration request includes:**
+- Pool name and description
+- Cluster endpoint (API server URL, kubeconfig, or connection details)
+- Platform type (OpenShift, RHEL)
+- Worker type and provisioner backend (see below)
+- Labels (key/value pairs for affinity matching)
+- Connectivity metadata (reachable network endpoints)
+- Capacity limits (max concurrent workers, resource quotas)
+- Credentials for cluster access (service account token, certificate, SSH key)
+
+### Worker Type
+
+Each pool is registered with a worker type that determines how workers are provisioned and whether they persist between tasks.
+
+| Worker Type | Lifecycle | Provisioner Model | Description |
+|---|---|---|---|
+| **Short-lived** | Ephemeral — created per task, destroyed after | Create/destroy | A new worker is provisioned for each task and torn down on completion. No state carries between tasks. |
+| **Long-lived** | Persistent — claimed per task, released after | Claim/release (shared pool) | A pool of pre-provisioned workers is maintained. Workers are claimed for a task and returned to the pool on completion. |
+
+Worker type is orthogonal to provisioner backend — for example, a vanilla K8s pool can operate in either mode (Deployment with Lease claiming for long-lived, or pod-per-task for short-lived).
+
+### Provisioner Backend
+
+Each pool is registered with a provisioner backend that determines the runtime technology used to create and manage workers.
+
+| Backend | Short-lived | Long-lived | Description |
+|---|---|---|---|
+| **Vanilla Kubernetes** | Yes | Yes (MVP) | Standard Kubernetes pods. Long-lived mode uses a Deployment with Lease-based claiming. |
+| **OpenShell** | Yes | No | NVIDIA policy-based sandboxing. Sandbox created per task, destroyed after. |
+| **Agent Sandbox** | Yes | Yes | K8s-native CRD-managed pools. Warm pool mode pre-provisions pods. |
+| **Substrate** | Yes | No | Custom substrate runtime. Sandbox created per task. |
+
+### Platform
+
+Each pool is registered against a target platform that determines the infrastructure capabilities and bootstrapping steps.
+
+| Platform | MVP | Description |
+|---|---|---|
+| **OpenShift** | Yes | On-cluster or remote OpenShift cluster. Supports namespaces, SCCs, Routes, NetworkPolicies. |
+| **RHEL** | No (future) | Standalone RHEL host. Supports Podman-based container execution. Delivered via [ANSTRAT-2338](https://redhat.atlassian.net/browse/ANSTRAT-2338). |
+
+### Cluster Bootstrapper
+
+Configures the target infrastructure to support worker provisioning. What the bootstrapper does depends on the platform and provisioner backend combination. The bootstrapper is an abstraction — each combination has its own implementation.
+
+**Responsibilities:**
+- Create or validate the target namespace on the cluster
+- Deploy RBAC resources (ServiceAccount, Role, RoleBinding) for the scheduler/provisioner
+- Install and configure the provisioner backend runtime (if required)
+- Deploy worker Deployment/ReplicaSet (for long-lived vanilla K8s pools)
+- Configure network policies and security context constraints
+- Validate that the cluster is ready to accept workers
+- Report bootstrap status (success, partial, failed)
+
+**Bootstrapping by backend:**
+
+| Backend | Platform | Bootstrap Actions |
+|---|---|---|
+| Vanilla K8s (long-lived) | OpenShift | Create namespace, deploy RBAC, deploy worker Deployment, configure readiness/liveness probes |
+| Vanilla K8s (short-lived) | OpenShift | Create namespace, deploy RBAC, configure pod security context |
+| OpenShell | OpenShift | Create namespace, deploy RBAC, install OpenShell operator (Helm), configure SCCs, deploy compute driver |
+| Agent Sandbox | OpenShift | Create namespace, deploy RBAC, install Agent Sandbox operator, create SandboxWarmPool CRD |
+| Vanilla K8s | RHEL | Configure Podman runtime, deploy agent binary, establish connectivity to control plane |
+
+### Pool Registry
+
+Stores all registered Worker Pool configurations and makes them available to the Reconciler at runtime.
+
+**Responsibilities:**
+- Persist pool registrations (database-backed)
+- Provide the Reconciler with the current set of registered and healthy pools
+- Track registration status (registering, bootstrapping, active, degraded, deregistering)
+- Store the pool's provisioner backend type so the Task Executor can select the correct `ProvisionerBackend` implementation at runtime
+
+### Registration Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Registering: Administrator submits registration
+    Registering --> Validating: Registration Provider validates request
+    Validating --> Bootstrapping: Validation passed
+    Validating --> Failed: Validation failed (unreachable endpoint, bad credentials)
+    Bootstrapping --> Active: Cluster Bootstrapper completes successfully
+    Bootstrapping --> Failed: Bootstrap failed (RBAC error, operator install failed)
+    Active --> Degraded: Resource Monitor detects health issues
+    Degraded --> Active: Health restored
+    Active --> Deregistering: Administrator requests deregistration
+    Degraded --> Deregistering: Administrator requests deregistration
+    Deregistering --> [*]: Workers drained, resources torn down, registration removed
+    Failed --> [*]: Administrator acknowledges or retries
+```
+
+### Registration Sequence
+
+```mermaid
+sequenceDiagram
+    participant Admin as Administrator
+    participant RP as Registration Provider
+    participant CB as Cluster Bootstrapper
+    participant PR as Pool Registry
+    participant RM as Resource Monitor
+    participant R as Reconciler
+
+    Admin->>RP: register pool (name, endpoint, platform: OpenShift,<br/>backend: vanilla-k8s, worker type: long-lived,<br/>labels: {region: eu-west, gpu: true})
+
+    RP->>RP: validate endpoint reachability
+    RP->>RP: validate cluster credentials
+
+    RP->>PR: create registration (status: bootstrapping)
+
+    RP->>CB: bootstrap cluster (platform: OpenShift, backend: vanilla-k8s)
+    CB->>CB: create namespace "agent-system"
+    CB->>CB: deploy RBAC (ServiceAccount, Role, RoleBinding)
+    CB->>CB: deploy worker Deployment (N replicas)
+    CB->>CB: validate pods reach Ready state
+    CB-->>RP: bootstrap complete
+
+    RP->>PR: update registration (status: active)
+
+    Note over PR: Pool now visible to Reconciler
+
+    RM->>PR: poll registered pools
+    RM->>RM: begin health probes for new pool
+
+    R->>PR: query available pools for task
+    PR-->>R: [..., {name: "eu-west-gpu", labels: {region: eu-west, gpu: true}, status: active}]
+```
+
+### Deregistration
+
+Removing a pool is a controlled process: drain active workers, tear down bootstrapped resources, and remove the registration.
+
+```mermaid
+sequenceDiagram
+    participant Admin as Administrator
+    participant RP as Registration Provider
+    participant CB as Cluster Bootstrapper
+    participant PR as Pool Registry
+    participant R as Reconciler
+
+    Admin->>RP: deregister pool "eu-west-gpu"
+
+    RP->>PR: update registration (status: deregistering)
+
+    Note over R: Reconciler stops selecting this pool<br/>for new tasks
+
+    RP->>RP: wait for active workers to complete (drain)
+
+    RP->>CB: tear down cluster resources
+    CB->>CB: delete worker Deployment
+    CB->>CB: delete RBAC resources
+    CB->>CB: delete namespace (if owned)
+    CB-->>RP: teardown complete
+
+    RP->>PR: remove registration
+
+    Note over PR: Pool no longer exists in registry
+```
+
 ## Sequence Diagrams
 
 ### Task Execution: Happy Path
