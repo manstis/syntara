@@ -1,84 +1,161 @@
 # Execution Plane — Provisioner and Dispatcher Invocation
 
-Detail of how the Provisioner creates Workers and how the Dispatcher invokes tasks within them. Companion to [execution-plane.md](execution-plane.md).
+Detail of how the Provisioner acquires Workers and how the Dispatcher invokes tasks within them. Companion to [execution-plane.md](execution-plane.md).
 
-## Provisioner: Creating a Worker
+## Provisioner Models: Shared Pool vs Per-Task Pod
 
-The Provisioner creates the underlying compute resource (a container/pod) in the target Worker Pool. The implementation is pluggable — a narrow `ProvisionerBackend` interface supports multiple runtime backends without rearchitecting the Execution Plane.
+The Execution Plane supports two fundamental provisioning models:
+
+| Model | How it works | Startup latency | Worker lifetime |
+|---|---|---|---|
+| **Shared pool** (claim/release) | A Deployment maintains N warm pods. The Provisioner claims one via a distributed lock and releases it after the task completes. The pod stays alive for the next task. | Milliseconds (pod already running) | Long-lived, reusable |
+| **Per-task pod** (create/destroy) | The Provisioner creates a new pod for each task and destroys it afterward. | Seconds (image pull + container start) | Ephemeral, single-use |
+
+The MVP uses the **shared pool** model via a vanilla Kubernetes Deployment with Lease-based claiming. Future backends (Agent Sandbox, OpenShell) may use either model depending on their capabilities.
 
 ### ProvisionerBackend Interface
+
+The interface abstracts over both models. `acquire` claims or creates a worker; `release` returns it to the pool or destroys it.
 
 ```python
 class WorkerHandle:
     id: str
-    name: str
+    pod_name: str
     namespace: str
-    backend: str  # "kubernetes" | "agent-sandbox" | "openshell"
+    backend: str  # "vanilla-k8s" | "agent-sandbox" | "openshell"
 
 class ProvisionerBackend(Protocol):
-    def create(self, image: str, resources: ResourceRequirements,
-               security_context: SecurityContext, labels: dict[str, str],
-               env: dict[str, str]) -> WorkerHandle: ...
-    def delete(self, handle: WorkerHandle) -> None: ...
-    def wait_ready(self, handle: WorkerHandle, timeout: float) -> None: ...
+    async def acquire(self, image: str, resources: ResourceRequirements,
+                      security_context: SecurityContext, labels: dict[str, str],
+                      env: dict[str, str], timeout: float) -> WorkerHandle: ...
+    async def release(self, handle: WorkerHandle) -> None: ...
 ```
 
-### Backend Implementations
+For shared-pool backends, `acquire` claims a pre-existing pod (fast); for per-task backends, `acquire` creates a new pod and waits for it to be ready (slow). The caller doesn't know which model is in use.
 
-Three runtime backends, each implementing the same interface:
+### Backend Implementations
 
 ```mermaid
 graph LR
     P["Provisioner"]
     P --> IF["ProvisionerBackend (interface)"]
-    IF --> K8s["Kubernetes API Backend"]
-    IF --> AS["Agent Sandbox Backend"]
-    IF --> OS["OpenShell Backend"]
+    IF --> VK["Vanilla K8s Pool (MVP)"]
+    IF --> AS["Agent Sandbox"]
+    IF --> OS["OpenShell"]
 
-    K8s -->|"CoreV1Api.create_namespaced_pod"| Pod1["Pod"]
+    VK -->|"Lease acquire → pods/exec"| Pod1["Warm Pod"]
     AS -->|"SandboxClient.create_sandbox"| Pod2["Sandbox Pod"]
     OS -->|"Sandbox(spec=...)"| Pod3["Sandbox Container"]
 ```
 
-#### Backend 1: Kubernetes API (lowest dependency)
+#### Backend 1: Vanilla Kubernetes Pool (MVP)
 
-Direct pod creation via the Kubernetes Python client. No external dependencies beyond the cluster API. Full control over pod spec, security context, and volumes.
+The MVP backend. A Kubernetes Deployment maintains a pool of identical long-running worker pods. The Provisioner claims a worker via a Kubernetes Lease (distributed lock) and releases it after the task completes. No external dependencies beyond the Kubernetes API.
 
-```python
-from kubernetes import client
+Reference implementation: `k8s-agent-pool` prototype.
 
-v1 = client.CoreV1Api()
-v1.create_namespaced_pod(namespace="workers", body={
-    "metadata": {
-        "name": f"worker-{task_id}",
-        "labels": {"workload-type": "action", "task-id": task_id},
-    },
-    "spec": {
-        "containers": [{
-            "name": "worker",
-            "image": "registry.example.com/ee-action:latest",
-            "resources": {
-                "requests": {"cpu": "250m", "memory": "256Mi"},
-                "limits": {"cpu": "500m", "memory": "512Mi"},
-            },
-            "volumeMounts": [{
-                "name": "creds",
-                "mountPath": "/run/secrets",
-                "readOnly": True,
-            }],
-        }],
-        "volumes": [{
-            "name": "creds",
-            "emptyDir": {"medium": "Memory"},  # tmpfs — never touches disk
-        }],
-        "restartPolicy": "Never",
-    },
-})
+**Architecture:**
+
+```
+Workflow A (Task Executor) ─┐
+                            │
+Workflow B (Task Executor) ─┼──▶ Kubernetes Leases ──▶ Worker Pods (Deployment)
+                            │           │
+Workflow C (Task Executor) ─┘      pods/exec
+                                  stdin/stdout
 ```
 
-**Strengths:** No experimental caveats on OpenShift. Full control over pod spec. No additional operators or DaemonSets required.
+**Infrastructure (deployed once by administrator):**
 
-**Weaknesses:** No warm pools (cold start on every task). No built-in sandboxing beyond namespace/network policy isolation. Credential injection is entirely the caller's responsibility.
+The pool is a standard Kubernetes Deployment with RBAC for the scheduler service account:
+
+- `Namespace` — dedicated namespace for worker pods (e.g. `agent-system`)
+- `Deployment` — maintains N replica worker pods with readiness/liveness probes
+- `ServiceAccount` + `Role` + `RoleBinding` — grants the scheduler `pods` (get/list/watch), `pods/exec` (create), and `leases` (get/list/watch/create/update)
+
+**Worker pod:** A long-running container whose PID 1 process stays alive. Each task is executed via `pods/exec` which spawns a separate process (`worker.py --once`) that reads a JSON request from stdin and writes a JSON response to stdout. The pod remains in the pool after the exec session completes.
+
+**Claim lifecycle (Lease-based distributed locking):**
+
+```mermaid
+sequenceDiagram
+    participant TE as Task Executor
+    participant P as Provisioner
+    participant K8s as Kubernetes API
+    participant W as Worker Pod
+
+    TE->>P: acquire worker
+
+    P->>K8s: list ready pods (label_selector=app=agent-worker)
+    K8s-->>P: [pod-a (ready), pod-b (ready), pod-c (busy)]
+
+    P->>K8s: create/update Lease for pod-a (holderIdentity=scheduler/workflow/node)
+    Note over K8s: Optimistic concurrency via resourceVersion.<br/>409 Conflict = another scheduler claimed first.
+    K8s-->>P: Lease acquired
+
+    P-->>TE: WorkerHandle(pod_name="pod-a")
+
+    Note over TE: Task Executor starts Lease renewal background task<br/>(renew every 10s, lease duration 30s)
+
+    TE->>P: release worker (after task completes)
+    P->>K8s: clear Lease holderIdentity
+    Note over W: Pod returns to pool, available for next task
+```
+
+**Key mechanisms:**
+
+| Mechanism | Detail |
+|---|---|
+| **Lease as distributed lock** | Each worker pod has a Lease named `worker-{pod_uid[:20]}`. The Lease's `holderIdentity` indicates the current owner. Leases use `resourceVersion` for optimistic concurrency — a 409 Conflict means another scheduler claimed first. |
+| **Lease renewal** | While a task executes, a background coroutine renews the Lease every 10 seconds (lease duration is 30 seconds). If renewal fails (409 Conflict or ownership changed), the task is considered suspect. |
+| **Lease expiry** | If a scheduler crashes, its Leases expire after 30 seconds. Other schedulers can then claim the abandoned workers. |
+| **Pod replacement** | If a worker pod dies, the Deployment/ReplicaSet automatically creates a replacement. The dead pod's Lease expires naturally. |
+| **Multi-scheduler** | Multiple Task Executor instances can share the same pool. The Lease prevents double-claiming. Candidates are shuffled randomly to avoid all schedulers hammering the same pod. |
+| **Pod readiness** | Only pods in `Running` phase with `Ready` condition are candidates for claiming. |
+
+**Worker process protocol:**
+
+```mermaid
+sequenceDiagram
+    participant D as Dispatcher
+    participant W as Worker Pod (PID 1)
+    participant E as Exec Process (worker.py --once)
+
+    Note over W: PID 1 stays alive (sleep loop)
+
+    D->>W: pods/exec: python /app/worker.py --once
+    W->>E: spawn process
+
+    D->>E: write stdin: {"request_id": "...", "workflow_id": "...", "input": {...}}
+    E->>E: execute(request)
+    E-->>D: write stdout: {"request_id": "...", "status": "completed", "result": {...}}
+    E-->>W: exit 0
+
+    Note over W: PID 1 still alive, pod remains in pool
+```
+
+**Strengths:**
+- No external dependencies — pure Kubernetes API (CoreV1, CoordinationV1)
+- Warm pool — pods are pre-provisioned, task startup is milliseconds (no image pull)
+- Multi-scheduler safe — Leases provide distributed concurrency control
+- Self-healing — Deployment replaces crashed pods automatically
+- Full OpenShift support — no experimental caveats, no privileged SCC required
+- Simple RBAC — scheduler only needs pods (read), pods/exec (create), leases (CRUD)
+
+**Weaknesses:**
+- No sandboxing beyond namespace/network policy isolation (pods are not reset between tasks)
+- No built-in credential isolation per workload type — caller-managed
+- Polling-based worker discovery (no queue/backpressure)
+- No resource-aware scheduling (all pods in the pool are identical)
+
+**Production hardening (future):**
+- Queue/backpressure instead of polling for available workers
+- Worker reset mechanism between tasks (clean environment)
+- Robust exec stream reconnect/error handling
+- Metrics and tracing (claim latency, utilization, lease contention)
+- Fairness across workflows
+- Separate pools by capability (action vs. agentic, GPU vs. CPU)
+- Pod readiness/liveness probes specific to the agent runtime
 
 #### Backend 2: Agent Sandbox (K8s-native, warm pools)
 
@@ -170,14 +247,17 @@ stateDiagram-v2
 
 ### Backend Comparison
 
-| Dimension | Kubernetes API | Agent Sandbox | OpenShell |
+| Dimension | Vanilla K8s Pool (MVP) | Agent Sandbox | OpenShell |
 |---|---|---|---|
-| Startup latency | Cold start (seconds) | Warm pool (milliseconds) | Cold start (seconds) |
+| Provisioning model | Shared pool (claim/release via Lease) | Warm pool (claim from CRD-managed pool) | Per-task (create/destroy sandbox) |
+| Startup latency | Milliseconds (warm pod) | Milliseconds (warm pool) | Seconds (cold start) |
 | Sandboxing | Namespace + NetworkPolicy | RuntimeClass (gVisor/Kata) | Policy-based (fs/net/proc) |
 | Credential injection | Caller-managed | Caller-managed | Built-in providers |
 | OpenShift support | Full | Full | Experimental |
-| Extra infrastructure | None | Operator + CRD | Gateway + compute driver |
-| Lifecycle management | Manual (create/delete pod) | SDK-managed | Context manager |
+| Extra infrastructure | None (Deployment + Lease) | Operator + CRD | Gateway + compute driver |
+| Multi-scheduler | Yes (Lease concurrency) | SDK-managed | N/A (per-task) |
+| Worker reuse | Yes (pod stays alive) | Configurable | No (sandbox destroyed) |
+| Lifecycle management | Deployment/ReplicaSet | SDK-managed | Context manager |
 
 ## Dispatcher: Invoking the Worker
 
@@ -207,6 +287,40 @@ sequenceDiagram
 **Implementation per backend:**
 
 ```python
+# Vanilla K8s Pool (MVP) — via WorkerPool.execute()
+# Internally uses kubernetes.stream for pods/exec with JSON-lines protocol.
+# The allocator handles the exec lifecycle: open stream, write stdin, read stdout, close.
+result = await pool.execute(worker, request=task_payload, owner=owner)
+
+# The underlying exec call (what WorkerPool.execute does):
+from kubernetes.stream import stream
+
+resp = stream(
+    v1.connect_get_namespaced_pod_exec,
+    name=worker_handle.pod_name,
+    namespace="workers",
+    command=["python", "/app/worker.py", "--once"],
+    container="worker",
+    stdin=True, stdout=True, stderr=True, tty=False,
+    _preload_content=False,  # returns WSClient for streaming I/O
+)
+resp.write_stdin(json.dumps(task_payload) + "\n")
+# Read stdout until newline-terminated JSON response
+while resp.is_open():
+    resp.update(timeout=1)
+    if resp.peek_stdout():
+        stdout += resp.read_stdout()
+    if stdout.endswith("\n"):
+        break
+result = json.loads(stdout.strip())
+resp.close()
+
+# Agent Sandbox
+result = sandbox.commands.run(
+    "python -m task_runner",
+    stdin=json.dumps(task_payload),
+)
+
 # OpenShell
 result = sandbox.exec(
     command=["python", "-m", "task_runner"],
@@ -214,7 +328,6 @@ result = sandbox.exec(
     env=credentials,
     timeout_seconds=300,
 )
-# result.exit_code, result.stdout, result.stderr
 
 # OpenShell (streaming — for long-running tasks with heartbeats)
 for chunk in sandbox.exec_stream(
@@ -226,29 +339,6 @@ for chunk in sandbox.exec_stream(
         handle_heartbeat_or_log(chunk.stream, chunk.data)
     else:
         final_result = chunk  # ExecResult
-
-# Agent Sandbox
-result = sandbox.commands.run(
-    "python -m task_runner",
-    stdin=json.dumps(task_payload),
-)
-
-# Kubernetes API
-from kubernetes.stream import stream
-
-resp = stream(
-    v1.connect_get_namespaced_pod_exec,
-    name=worker_pod_name,
-    namespace="workers",
-    command=["python", "-m", "task_runner"],
-    container="worker",
-    stdin=True, stdout=True, stderr=True, tty=False,
-    _preload_content=False,  # returns WSClient for streaming I/O
-)
-resp.write_stdin(json.dumps(task_payload))
-resp.write_stdin("\n")
-output = resp.read_stdout()
-resp.close()
 ```
 
 **Strengths:** Decouples task delivery from provisioning. Works with all three backends. Supports streaming heartbeats and incremental output. The Worker container doesn't need a network listener — no exposed ports, no service mesh.
@@ -317,21 +407,21 @@ sequenceDiagram
 
     CP-->>D: resolved credentials
 
-    alt OpenShell backend
-        D->>W: exec(env=credentials) — OpenShell injects via exec env parameter
-    else Kubernetes API backend
-        D->>W: write to memory-backed emptyDir, then exec
+    alt Vanilla K8s Pool backend
+        D->>W: include credentials in exec stdin payload or env
     else Agent Sandbox backend
         D->>W: sandbox.commands.run(env=credentials)
+    else OpenShell backend
+        D->>W: exec(env=credentials) — OpenShell injects via exec env parameter
     end
 ```
 
 | Backend | Injection mechanism | Disk-free | Audit trail |
 |---|---|---|---|
+| Vanilla K8s Pool (MVP) | Credentials included in the JSON request payload via stdin, or written to `emptyDir` with `medium: Memory` (tmpfs) | Yes | Custom (control plane logs) |
+| Agent Sandbox | `sandbox.commands.run()` with env | Yes | Custom (control plane logs) |
 | OpenShell | `exec(env={...})` — per-exec env injection | Yes | OpenShell audit log |
 | OpenShell (providers) | `SandboxSpec.providers` — resolved by gateway | Yes | Provider-specific (Vault, K8s) |
-| Kubernetes API | Write to `emptyDir` with `medium: Memory` (tmpfs) | Yes | Custom (control plane logs) |
-| Agent Sandbox | `sandbox.commands.run()` with env | Yes | Custom (control plane logs) |
 
 All mechanisms ensure credentials are never persisted to disk and are wiped when the Worker terminates.
 
@@ -339,8 +429,30 @@ All mechanisms ensure credentials are never persisted to disk and are wiped when
 
 | Concern | Recommendation | Rationale |
 |---|---|---|
-| MVP Provisioner backend | Kubernetes API or Agent Sandbox | Both work on OpenShift today without experimental caveats |
+| MVP Provisioner backend | **Vanilla Kubernetes Pool** | Warm pods via Deployment, Lease-based claiming, pure K8s API, full OpenShift support, no external dependencies. Short-term stepping stone. |
+| Next Provisioner backend | Agent Sandbox | Adds RuntimeClass sandboxing (gVisor/Kata), CRD-managed warm pools, and an async SDK |
 | Future Provisioner backend | OpenShell | Adds policy-based sandboxing and built-in credential providers when OpenShift support matures |
-| Dispatcher invocation | Exec-based (Pattern A) | Works with all backends, supports streaming, compatible with warm pools |
-| Credential injection | Per-exec env injection + memory-backed volume | Leverages Syntara's existing credential store; no external secret manager dependency |
-| Interface design | Narrow `ProvisionerBackend` protocol | Swapping backends is a configuration change, not a code change |
+| Dispatcher invocation | Exec-based (Pattern A) | Works with all backends, supports streaming, compatible with warm/shared pools |
+| Credential injection | Credentials in stdin payload + memory-backed volume fallback | Leverages Syntara's existing credential store; no external secret manager dependency |
+| Interface design | `acquire`/`release` `ProvisionerBackend` protocol | Abstracts over both shared-pool (claim/release) and per-task (create/destroy) models. Swapping backends is a configuration change, not a code change. |
+
+### Migration Path
+
+The vanilla Kubernetes pool is a deliberate stepping stone. It provides the warm-pool and exec-based dispatch patterns that the Execution Plane needs, using only standard Kubernetes primitives. When stronger sandboxing or LLM-centric runtime features are required, the `ProvisionerBackend` interface allows swapping to Agent Sandbox or OpenShell without changing the Task Executor, Reconciler, Dispatcher, or any other Execution Plane component.
+
+```mermaid
+graph LR
+    MVP["Vanilla K8s Pool<br/>(Deployment + Lease)"]
+    AS["Agent Sandbox<br/>(CRD + RuntimeClass)"]
+    OS["OpenShell<br/>(Policy-based sandbox)"]
+
+    MVP -->|"add sandboxing"| AS
+    MVP -->|"add policy engine"| OS
+    AS -->|"add policy engine"| OS
+```
+
+| Phase | Backend | What it adds |
+|---|---|---|
+| **MVP** | Vanilla K8s Pool | Warm pods, Lease claiming, exec dispatch, multi-scheduler |
+| **Phase 2** | Agent Sandbox | gVisor/Kata isolation, CRD-managed pools, async SDK |
+| **Phase 3** | OpenShell | Policy-based fs/net/proc sandboxing, built-in credential providers, `exec_python()` |
