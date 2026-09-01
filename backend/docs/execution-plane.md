@@ -36,11 +36,12 @@ graph TB
     WE -->|"execute_task(task definition)"| TE
     TE -->|"resolve pool"| R
     RM -->|"capacity + health"| R
-    R -->|"selected pool"| TE
-    TE -->|"provision worker"| P
+    R -->|"ReconcileResult"| TE
+    TE -->|"acquire worker"| P
+    TE -.->|"request scale-up (back-pressure)"| P
     EER -->|"container image"| P
     IP -->|"isolation constraints"| P
-    P -->|"worker created"| TE
+    P -->|"WorkerHandle"| TE
     TE -->|"dispatch task"| D
     CP -->|"credentials"| D
     D -->|"run task"| W1
@@ -61,8 +62,21 @@ The single entry point into the Execution Plane. The Workflow Engine calls `exec
 - Accept a task definition from the Workflow Engine (task payload, affinity labels, workload type, connectivity requirements, EE reference)
 - Orchestrate the execution pipeline: reconcile a pool, provision a worker, dispatch the task, collect the result
 - Handle provisioning failures by retrying with fallback pools from the Reconciler's ranked list
+- **Handle back-pressure:** when the Reconciler returns `CAPACITY_EXHAUSTED`, queue the task and attempt corrective action (see [Back-Pressure and Capacity Management](#back-pressure-and-capacity-management))
 - Return the task result (or a structured error) to the Workflow Engine
 - Ensure worker cleanup occurs regardless of task outcome (delegates to the Lifecycle Manager)
+
+**Back-pressure handling:**
+
+The Task Executor is the decision-maker for back-pressure. When the Reconciler reports that matching pools exist but have no available capacity, the Task Executor takes corrective action:
+
+| Reconciler outcome | Task Executor action |
+|---|---|
+| `MATCHED` | Proceed immediately — acquire worker from the best available pool |
+| `CAPACITY_EXHAUSTED` | Queue the task, request pool scale-up via the Provisioner, re-poll until capacity frees or timeout expires |
+| `NO_MATCHING_POOLS` | Fail immediately with a structured error — no corrective action possible |
+
+The scale-up request is delegated to the Provisioner, which knows how to add capacity to a given pool (e.g. scaling a Deployment's replica count for vanilla K8s pools). The Provisioner may decline the request if the pool is already at its configured maximum.
 
 **Interface:**
 - `execute_task(task_definition) -> task_result` — the only method the Workflow Engine calls
@@ -102,14 +116,14 @@ A logical grouping of Workers representing a deployment target — for example, 
 
 ### Reconciler
 
-Selects a Worker Pool in which to provision a Worker for a given task node. The Reconciler evaluates task requirements against available Worker Pools, considering labels, connectivity, capacity, and isolation constraints.
+Selects a Worker Pool in which to provision a Worker for a given task node. The Reconciler evaluates task requirements against available Worker Pools, considering labels, connectivity, capacity, and isolation constraints. It returns a structured result that tells the Task Executor both what matched and why anything didn't — enabling the Task Executor to take appropriate corrective action.
 
 **Responsibilities:**
 - Match task node affinity labels against Worker Pool labels
 - Evaluate connectivity requirements (can the pool reach the endpoints this task needs?)
 - Consult the Resource Monitor for available capacity
 - Apply Isolation Policy constraints (e.g. agentic workloads excluded from certain pools)
-- Return a ranked list of eligible Worker Pools (or fail if none match)
+- Return a structured `ReconcileResult` (not just a list) that classifies pools by outcome
 
 **Inputs:**
 - Task node label selectors and affinity rules
@@ -117,16 +131,35 @@ Selects a Worker Pool in which to provision a Worker for a given task node. The 
 - Workload type (deterministic action vs. agentic)
 - Resource Monitor data (capacity, health, connectivity metadata)
 
+**Structured result:**
+
+The Reconciler returns a `ReconcileResult` that partitions pools into three categories and provides an overall outcome. This gives the Task Executor enough information to decide whether to proceed, queue, scale, or fail.
+
+```python
+class ReconcileResult:
+    available_pools: list[PoolWithCapacity]    # labels match, capacity available — can run now
+    exhausted_pools: list[PoolAtCapacity]      # labels match, but all workers busy
+    ineligible_pools: list[PoolIneligible]     # labels/isolation/connectivity mismatch (with reason)
+    outcome: ResolveOutcome  # MATCHED | CAPACITY_EXHAUSTED | NO_MATCHING_POOLS
+```
+
+| Outcome | Meaning | Task Executor action |
+|---|---|---|
+| `MATCHED` | At least one pool has capacity | Proceed with provisioning |
+| `CAPACITY_EXHAUSTED` | Pools match but all are full | Queue the task, attempt to scale a pool via the Provisioner |
+| `NO_MATCHING_POOLS` | No pool matches labels/isolation/connectivity | Fail immediately — scaling won't help |
+
 ### Provisioner
 
 Creates a Worker within the selected Worker Pool. The Provisioner is an abstraction over the underlying infrastructure — different implementations handle different pool types (OpenShift pods, OpenShell sandboxes, Agent Sandbox, etc.).
 
 **Responsibilities:**
-- Create the Worker compute resource in the target pool
+- Create the Worker compute resource in the target pool (or acquire one from a shared pool)
 - Pull and apply the specified Execution Environment container image
 - Apply Isolation Policy constraints (namespace isolation, network policies, seccomp profiles)
 - Configure resource limits per the Worker definition
 - Report provisioning status (success, failure, timeout)
+- **Scale-up on demand:** when the Task Executor requests additional capacity for a pool, increase the pool size (e.g. scale a Deployment's replica count). The Provisioner enforces the pool's configured maximum — if the pool is already at max, the scale-up request is declined and the Task Executor must wait for existing workers to free up or time out.
 
 **Key design constraint:** The Provisioner interface is implementation-agnostic. New provisioner types (e.g. OpenShell, RHEL execution nodes) can be added without rearchitecting the interface.
 
@@ -583,6 +616,79 @@ sequenceDiagram
     D->>W: inject credentials as env vars (ephemeral, not persisted)
 ```
 
+### Back-Pressure: Capacity Exhaustion and Scale-Up
+
+Shows the flow when all matching Worker Pools are at capacity. The Reconciler detects the condition, the Task Executor decides what to do, and the Provisioner attempts to add capacity.
+
+```mermaid
+sequenceDiagram
+    participant WE as Workflow Engine
+    participant TE as Task Executor
+    participant R as Reconciler
+    participant RM as Resource Monitor
+    participant P as Provisioner
+    participant WP as Worker Pool
+
+    WE->>TE: execute_task(task_definition)
+
+    TE->>R: resolve_pool(task_requirements)
+
+    R->>RM: get pool capacity + health
+    RM-->>R: pool capacity data
+
+    Note over R: Pools A and B match labels<br/>but both are at max workers
+
+    R-->>TE: ReconcileResult {<br/>  outcome: CAPACITY_EXHAUSTED,<br/>  exhausted_pools: [A, B],<br/>  available_pools: [] }
+
+    Note over TE: No available pools —<br/>attempt corrective action
+
+    TE->>P: request_scale_up(pool_A, +1 worker)
+
+    alt Pool can scale
+        P->>WP: scale Deployment replicas +1
+        WP-->>P: new pod scheduled
+        P-->>TE: scale_up accepted
+
+        Note over TE: Re-poll until new worker<br/>is ready or timeout expires
+
+        loop Poll for capacity (with timeout)
+            TE->>R: resolve_pool(task_requirements)
+            R->>RM: get pool capacity
+            RM-->>R: updated capacity
+            R-->>TE: ReconcileResult { outcome: MATCHED, available_pools: [A] }
+        end
+
+        Note over TE: Capacity available —<br/>proceed with normal flow
+
+        TE->>P: acquire(pool_A, image, resources)
+        P-->>TE: WorkerHandle
+
+    else Pool at configured maximum
+        P-->>TE: scale_up declined (at max)
+
+        Note over TE: Cannot scale —<br/>queue and wait for a worker<br/>to free up (with timeout)
+
+        loop Wait for capacity (with timeout)
+            TE->>R: resolve_pool(task_requirements)
+            R-->>TE: ReconcileResult
+        end
+
+        alt Capacity freed before timeout
+            TE->>P: acquire(pool, image, resources)
+            P-->>TE: WorkerHandle
+        else Timeout expired
+            TE-->>WE: TaskResult { status: FAILED,<br/>  error: "capacity_timeout" }
+        end
+    end
+```
+
+**Design decisions:**
+
+- **Reconciler detects, Task Executor decides.** The Reconciler is a pure query — it never mutates state. The Task Executor holds the policy for what to do when capacity is exhausted (queue, scale, fail).
+- **Scale-up via the Provisioner.** The Provisioner already knows the pool's infrastructure (K8s Deployment, Agent Sandbox CRD, etc.), so it is the natural component to request additional capacity from. No separate Autoscaler component is needed for the MVP.
+- **Bounded retries with timeout.** The Task Executor re-polls the Reconciler rather than blocking on a notification. This keeps the design simple and avoids event-bus coupling. The overall task timeout (from the task definition) bounds how long the Task Executor will wait.
+- **No dedicated Task Queue component for MVP.** The Task Executor holds the waiting task in-process. A persistent, shared task queue can be introduced later if cross-instance coordination or priority scheduling is needed.
+
 ## Entity Relationships
 
 ```mermaid
@@ -685,11 +791,11 @@ Per the July 2026 planning decisions ([ANSTRAT-1803](https://redhat.atlassian.ne
 
 | Component | MVP Scope |
 |---|---|
-| Task Executor | Single `execute_task` entry point for the Workflow Engine; orchestrates the full pipeline |
+| Task Executor | Single `execute_task` entry point for the Workflow Engine; orchestrates the full pipeline including back-pressure handling (in-process queue, scale-up requests, bounded timeout) |
 | Worker | OpenShift pod within the control plane cluster |
 | Worker Pool | Single on-cluster pool (same namespace or dedicated namespace) |
-| Reconciler | Global affinity only; project/workflow/node-level affinity deferred |
-| Provisioner | OpenShift pod provisioner (Kubernetes API). Implementation-agnostic interface |
+| Reconciler | Global affinity only; project/workflow/node-level affinity deferred. Returns structured `ReconcileResult` with outcome (`MATCHED` / `CAPACITY_EXHAUSTED` / `NO_MATCHING_POOLS`) |
+| Provisioner | OpenShift pod provisioner (Kubernetes API). Implementation-agnostic interface. Supports `acquire`/`release` and `request_scale_up` (bounded by pool max) |
 | Dispatcher | Deliver task payload, collect results |
 | EE Registry | OCI image references from customer-accessible registries |
 | Resource Monitor | Pod/agent list view for administrators |

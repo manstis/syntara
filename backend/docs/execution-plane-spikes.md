@@ -41,7 +41,8 @@ Define the component contracts before any implementation. This is the foundation
 - `ProvisionerBackend` protocol — `acquire` / `release` / async variants
 - `WorkerHandle` — what a claimed worker looks like to the caller
 - `PoolRegistration` — the data model for a registered pool (name, endpoint, platform, backend, worker type, labels, status)
-- `Reconciler` interface — `resolve_pool(task_requirements) -> ranked list`
+- `ReconcileResult` — structured result with `available_pools`, `exhausted_pools`, `ineligible_pools`, `outcome` enum
+- `Reconciler` interface — `resolve_pool(task_requirements) -> ReconcileResult`
 - `Dispatcher` interface — `dispatch(handle, payload, credentials) -> result`
 - `TaskExecutor` interface — `execute_task(task_definition) -> task_result`
 
@@ -104,11 +105,11 @@ Implement pool selection logic. Given a set of registered pools and a task's req
 - Read registered pools from the Pool Registry (Spike 4)
 - Label matching: task affinity labels against pool labels
 - Status filtering: exclude pools that are not `active`
-- Capacity filtering: exclude pools at capacity (requires basic worker count tracking)
-- Ranked output: order by available capacity (or simple round-robin for the spike)
-- Return a ranked list, not a single pool — the Task Executor uses the list for fallback
+- Capacity filtering: classify pools as available vs exhausted (requires basic worker count tracking)
+- Return a structured `ReconcileResult` with `outcome` enum (`MATCHED`, `CAPACITY_EXHAUSTED`, `NO_MATCHING_POOLS`)
+- Available pools ranked by capacity; exhausted pools included so the Task Executor can request scale-up
 
-**Question answered:** Does label-based matching work for our use cases? What ranking strategy makes sense? How fast is the selection?
+**Question answered:** Does label-based matching work for our use cases? Does the structured result give the Task Executor enough information for back-pressure decisions? How fast is the selection?
 
 **Depends on:** Spike 4 (needs registered pools in the Pool Registry to select from).
 
