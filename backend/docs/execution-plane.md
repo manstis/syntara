@@ -54,6 +54,20 @@ graph TB
     RM -.->|"health probes"| LM2
 ```
 
+**Simplified view — critical path only:**
+
+```mermaid
+graph LR
+    WE["Workflow Engine"] -->|"execute_task"| TE["Task Executor"]
+    TE -->|"resolve pool"| R["Reconciler"]
+    R -->|"read pools"| PR["Pool Registry"]
+    TE -->|"acquire worker"| P["Provisioner"]
+    TE -->|"dispatch task"| D["Dispatcher"]
+    D -->|"inject credentials"| CP["Credential Provider"]
+    D -->|"run task"| W["Worker Pool"]
+    TE -.->|"task result"| WE
+```
+
 ### Task Executor
 
 The single entry point into the Execution Plane. The Workflow Engine calls `execute_task(task_definition)` and receives a result — it has no knowledge of pools, provisioning, or dispatch internals. The Task Executor owns the full orchestration pipeline: Reconciler, Provisioner, Dispatcher, and cleanup.
@@ -498,6 +512,42 @@ sequenceDiagram
     LM->>W: terminate + cleanup
 
     TE-->>WE: task result
+```
+
+### Task Execution: Critical Path (Simplified)
+
+The essential sequence through the critical path components, omitting supporting concerns (Isolation Policy, EE Registry, Resource Monitor, Lifecycle Manager).
+
+```mermaid
+sequenceDiagram
+    participant WE as Workflow Engine
+    participant TE as Task Executor
+    participant R as Reconciler
+    participant PR as Pool Registry
+    participant P as Provisioner
+    participant CP as Credential Provider
+    participant D as Dispatcher
+    participant W as Worker
+
+    WE->>TE: execute_task(task_definition)
+
+    TE->>R: resolve_pool(labels, workload_type)
+    R->>PR: query registered pools
+    PR-->>R: matching pools with capacity
+    R-->>TE: ReconcileResult (MATCHED, pool A)
+
+    TE->>P: acquire(pool_A, image, resources)
+    P-->>TE: WorkerHandle (pod_name, namespace)
+
+    TE->>D: dispatch(handle, payload, credential_refs)
+    D->>CP: resolve credentials
+    CP-->>D: decrypted credentials
+    D->>W: exec task (stdin JSON + credentials)
+    W-->>D: task output (stdout JSON)
+    D-->>TE: TaskResult
+
+    TE->>P: release(handle)
+    TE-->>WE: TaskResult
 ```
 
 ### Reconciliation: Pool Selection Logic
