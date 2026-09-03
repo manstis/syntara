@@ -36,7 +36,6 @@ graph TB
 
     subgraph Provisioning["Worker Provisioning"]
         P["Provisioner"]
-        EER["EE Registry"]
         IP["Isolation Policy"]
     end
 
@@ -56,7 +55,6 @@ graph TB
 
     TE -->|"acquire worker"| P
     TE -.->|"scale-up (back-pressure)"| P
-    EER -->|"container image"| P
     IP -->|"isolation constraints"| P
     P -->|"WorkerHandle"| TE
 
@@ -83,7 +81,7 @@ graph LR
 The single entry point into the Execution Plane. The Workflow Engine calls `execute_task(task_definition)` and receives a result — it has no knowledge of pools, provisioning, or dispatch internals. The Task Executor owns the full orchestration pipeline: Reconciler, Provisioner, Dispatcher, and cleanup.
 
 **Responsibilities:**
-- Accept a task definition from the Workflow Engine (task payload, affinity labels, workload type, connectivity requirements, EE reference)
+- Accept a task definition from the Workflow Engine (task payload, affinity labels, workload type, connectivity requirements)
 - Orchestrate the execution pipeline: reconcile a pool, provision a worker, dispatch the task, collect the result
 - Handle provisioning failures by retrying with fallback pools from the Reconciler's ranked list
 - **Handle back-pressure:** when the Reconciler returns `CAPACITY_EXHAUSTED`, queue the task and attempt corrective action (see [Back-Pressure and Capacity Management](#back-pressure-and-capacity-management))
@@ -104,7 +102,7 @@ The scale-up request is delegated to the Provisioner, which knows how to add cap
 
 **Interface:**
 - `execute_task(task_definition) -> task_result` — the only method the Workflow Engine calls
-- The task definition includes: task payload (inputs, parameters), affinity labels, workload type (action/agentic), connectivity requirements, EE image reference, credential references, resource requirements (CPU, memory, timeout)
+- The task definition includes: task payload (inputs, parameters), affinity labels, workload type (action/agentic), connectivity requirements, credential references, resource requirements (CPU, memory, timeout)
 
 ### Worker
 
@@ -117,7 +115,6 @@ The smallest granular compute unit. A Worker executes a single workflow task nod
 
 **Key attributes:**
 - Compute requirements (CPU, memory, storage)
-- Assigned Execution Environment (container image)
 - Applied Isolation Policy
 - Injected credentials
 - Lifecycle state (pending, running, succeeded, failed, terminated)
@@ -132,6 +129,7 @@ A logical grouping of Workers representing a deployment target — for example, 
 - Support label-based selection by the Reconciler
 
 **Key attributes:**
+- Container image (OCI image reference specified at registration time — e.g. `quay.io/org/worker:latest` — with optional registry credentials)
 - Labels (key/value pairs for affinity matching)
 - Connectivity metadata (reachable network endpoints, segments, geographies)
 - Capacity limits (max concurrent Workers, resource quotas)
@@ -178,8 +176,7 @@ class ReconcileResult:
 Creates a Worker within the selected Worker Pool. The Provisioner is an abstraction over the underlying infrastructure — different implementations handle different pool types (OpenShift pods, OpenShell sandboxes, Agent Sandbox, etc.).
 
 **Responsibilities:**
-- Create the Worker compute resource in the target pool (or acquire one from a shared pool)
-- Pull and apply the specified Execution Environment container image
+- Acquire a Worker from the target pool (claim via Lease in a shared pool, or create a new pod for short-lived pools)
 - Apply Isolation Policy constraints (namespace isolation, network policies, seccomp profiles)
 - Configure resource limits per the Worker definition
 - Report provisioning status (success, failure, timeout)
@@ -197,22 +194,6 @@ Delivers the workflow task payload to a provisioned Worker and manages the task 
 - Monitor task execution (heartbeats, timeouts)
 - Collect task output and return it to the Task Executor
 - Handle task failure, retry, and cancellation signals
-
-### Execution Environment (EE) Registry
-
-Manages the catalogue of container images available for task execution. An Execution Environment defines the software stack (Python packages, Ansible collections, system libraries) that a task node runs within.
-
-**Responsibilities:**
-- Maintain a catalogue of available EE images and their metadata
-- Validate that EE images are sourced from OCI-compliant registries accessible from the target Worker Pool
-- Provide the Provisioner with the image reference to pull when creating a Worker
-- Support a minimum-footprint base image for building custom EEs
-
-**Key attributes per EE:**
-- OCI image reference (registry/repository:tag)
-- Supported workload types (action, agentic, both)
-- Required capabilities or system libraries
-- Build lineage (base image, build tool version)
 
 ### Resource Monitor
 
@@ -458,14 +439,13 @@ sequenceDiagram
     participant RM as Resource Monitor
     participant IP as Isolation Policy
     participant P as Provisioner
-    participant EER as EE Registry
     participant CP as Credential Provider
     participant D as Dispatcher
     participant W as Worker
 
     WE->>TE: execute_task(task definition)
 
-    Note over TE: Task definition includes:<br/>payload, affinity labels, workload type,<br/>connectivity requirements, EE reference
+    Note over TE: Task definition includes:<br/>payload, affinity labels, workload type,<br/>connectivity requirements
 
     TE->>R: resolve pool (labels, workload type, connectivity)
 
@@ -479,10 +459,9 @@ sequenceDiagram
 
     R-->>TE: ranked pool list [Pool A, Pool B]
 
-    TE->>P: provision worker in Pool A
+    TE->>P: acquire worker in Pool A
 
-    P->>EER: resolve EE image for task
-    EER-->>P: OCI image reference
+    Note over P: Container image defined<br/>on pool registration
 
     P->>IP: get security context for workload type
     IP-->>P: namespace, network policy, seccomp profile
@@ -513,7 +492,7 @@ sequenceDiagram
 
 ### Task Execution: Critical Path (Simplified)
 
-The essential sequence through the critical path components, omitting supporting concerns (Isolation Policy, EE Registry, Resource Monitor).
+The essential sequence through the critical path components, omitting supporting concerns (Isolation Policy, Resource Monitor).
 
 ```mermaid
 sequenceDiagram
@@ -737,15 +716,11 @@ erDiagram
     WORKER_POOL ||--o{ POOL_LABEL : has
     WORKER_POOL ||--o{ CONNECTIVITY_ENDPOINT : reaches
     WORKER_POOL }o--|| PROVISIONER_TYPE : "managed by"
-    WORKER_POOL ||--|| LIFECYCLE_MANAGER : "operated by"
 
-    WORKER }o--|| EXECUTION_ENVIRONMENT : "runs in"
     WORKER }o--|| ISOLATION_POLICY : "governed by"
     WORKER }o--|| TASK_DISPATCH : "executes"
 
     TASK_DISPATCH }o--|| CREDENTIAL_SET : "injected with"
-
-    EXECUTION_ENVIRONMENT }o--|| OCI_REGISTRY : "sourced from"
 
     WORKFLOW_NODE }o--o{ NODE_LABEL : has
     WORKFLOW_NODE ||--|| TASK_DISPATCH : "produces"
@@ -753,6 +728,8 @@ erDiagram
     WORKER_POOL {
         uuid id PK
         string name
+        string image_ref
+        string registry_credentials
         string status
         int max_workers
         string provisioner_type
@@ -776,19 +753,10 @@ erDiagram
     WORKER {
         uuid id PK
         uuid pool_id FK
-        uuid ee_id FK
         uuid policy_id FK
         string state
         datetime created_at
         datetime terminated_at
-    }
-
-    EXECUTION_ENVIRONMENT {
-        uuid id PK
-        string name
-        string image_ref
-        string base_image
-        string workload_type
     }
 
     ISOLATION_POLICY {
@@ -814,7 +782,6 @@ erDiagram
     WORKFLOW_NODE {
         uuid id PK
         string workload_type
-        uuid ee_id FK
     }
 
     NODE_LABEL {
@@ -837,7 +804,6 @@ Per the July 2026 planning decisions ([ANSTRAT-1803](https://redhat.atlassian.ne
 | Reconciler | Global affinity only; project/workflow/node-level affinity deferred. Returns structured `ReconcileResult` with outcome (`MATCHED` / `CAPACITY_EXHAUSTED` / `NO_MATCHING_POOLS`) |
 | Provisioner | OpenShift pod provisioner (Kubernetes API). Implementation-agnostic interface. Supports `acquire`/`release` and `request_scale_up` (bounded by pool max) |
 | Dispatcher | Deliver task payload, collect results |
-| EE Registry | OCI image references from customer-accessible registries |
 | Resource Monitor | Pod/agent list view for administrators |
 | Credential Provider | Credential injection scoped by workload type |
 | Isolation Policy | Container isolation + namespace separation (no OpenShell/policy-based sandboxing) |
