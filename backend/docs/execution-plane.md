@@ -245,7 +245,7 @@ graph TB
     PR["Pool Registry"]
     R["Reconciler"]
 
-    Admin -->|"register pool<br/>(type, platform, endpoint, labels)"| RP
+    Admin -->|"register pool<br/>(type, platform, endpoint,<br/>container image, labels)"| RP
     RP -->|"bootstrap cluster"| CB
     CB -->|"configure infrastructure"| Cluster["Target Cluster"]
     RP -->|"store registration"| PR
@@ -271,10 +271,13 @@ Accepts a pool registration request from an administrator and orchestrates the r
 - Cluster endpoint (API server URL, kubeconfig, or connection details)
 - Platform type (OpenShift, RHEL)
 - Worker type and provisioner backend (see below)
+- Container image (OCI image reference — e.g. `quay.io/org/worker:latest`) and optional registry credentials for image pull
 - Labels (key/value pairs for affinity matching)
 - Connectivity metadata (reachable network endpoints)
 - Capacity limits (max concurrent workers, resource quotas)
 - Credentials for cluster access (service account token, certificate, SSH key)
+
+**Container image:** The container image is a required field when registering a pool. It defines the software stack that workers in the pool run (Python packages, Ansible collections, system libraries). The image may be specified directly as an OCI registry path, or in future it may be derived implicitly — for example, by selecting an extension for which the pool provides workers. The mechanism by which an extension maps to a container image is outside the scope of the Execution Plane; the Execution Plane requires only that a concrete OCI image reference is available at registration time. The Cluster Bootstrapper uses this image reference in the worker PodSpec when bootstrapping the pool's infrastructure.
 
 ### Worker Type
 
@@ -315,7 +318,7 @@ Configures the target infrastructure to support worker provisioning. What the bo
 - Create or validate the target namespace on the cluster
 - Deploy RBAC resources (ServiceAccount, Role, RoleBinding) for the scheduler/provisioner
 - Install and configure the provisioner backend runtime (if required)
-- Deploy worker Deployment/ReplicaSet (for long-lived vanilla K8s pools)
+- Deploy worker Deployment/ReplicaSet using the registered container image (for long-lived vanilla K8s pools)
 - Configure network policies and security context constraints
 - Validate that the cluster is ready to accept workers
 - Report bootstrap status (success, partial, failed)
@@ -324,8 +327,8 @@ Configures the target infrastructure to support worker provisioning. What the bo
 
 | Backend | Platform | Bootstrap Actions |
 |---|---|---|
-| Vanilla K8s (long-lived) | OpenShift | Create namespace, deploy RBAC, deploy worker Deployment, configure readiness/liveness probes |
-| Vanilla K8s (short-lived) | OpenShift | Create namespace, deploy RBAC, configure pod security context |
+| Vanilla K8s (long-lived) | OpenShift | Create namespace, deploy RBAC, deploy worker Deployment (using registered container image), configure readiness/liveness probes |
+| Vanilla K8s (short-lived) | OpenShift | Create namespace, deploy RBAC, configure pod template (using registered container image), configure pod security context |
 | OpenShell | OpenShift | Create namespace, deploy RBAC, install OpenShell operator (Helm), configure SCCs, deploy compute driver |
 | Agent Sandbox | OpenShift | Create namespace, deploy RBAC, install Agent Sandbox operator, create SandboxWarmPool CRD |
 | Vanilla K8s | RHEL | Configure Podman runtime, deploy agent binary, establish connectivity to control plane |
@@ -369,7 +372,7 @@ sequenceDiagram
     participant RM as Resource Monitor
     participant R as Reconciler
 
-    Admin->>RP: register pool (name, endpoint, platform: OpenShift,<br/>backend: vanilla-k8s, worker type: long-lived,<br/>labels: {region: eu-west, gpu: true})
+    Admin->>RP: register pool (name, endpoint, platform: OpenShift,<br/>backend: vanilla-k8s, worker type: long-lived,<br/>image: quay.io/org/worker:1.0,<br/>labels: {region: eu-west, gpu: true})
 
     RP->>RP: validate endpoint reachability
     RP->>RP: validate cluster credentials
@@ -379,7 +382,7 @@ sequenceDiagram
     RP->>CB: bootstrap cluster (platform: OpenShift, backend: vanilla-k8s)
     CB->>CB: create namespace "agent-system"
     CB->>CB: deploy RBAC (ServiceAccount, Role, RoleBinding)
-    CB->>CB: deploy worker Deployment (N replicas)
+    CB->>CB: deploy worker Deployment (N replicas, image: quay.io/org/worker:1.0)
     CB->>CB: validate pods reach Ready state
     CB-->>RP: bootstrap complete
 
