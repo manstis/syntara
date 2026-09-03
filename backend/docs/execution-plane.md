@@ -23,13 +23,11 @@ graph TB
     end
 
     subgraph EP1["Worker Pool A (e.g. On-Cluster OpenShift)"]
-        LM1["Lifecycle Manager"]
         W1["Worker"]
         W2["Worker"]
     end
 
     subgraph EP2["Worker Pool B (e.g. Remote OpenShift Cluster)"]
-        LM2["Lifecycle Manager"]
         W3["Worker"]
     end
 
@@ -47,11 +45,8 @@ graph TB
     D -->|"run task"| W1
     D -->|"run task"| W3
     TE -.->|"task result"| WE
-    LM1 --- W1
-    LM1 --- W2
-    LM2 --- W3
-    RM -.->|"health probes"| LM1
-    RM -.->|"health probes"| LM2
+    RM -.->|"health probes"| W1
+    RM -.->|"health probes"| W3
 ```
 
 **Simplified view — critical path only:**
@@ -78,7 +73,7 @@ The single entry point into the Execution Plane. The Workflow Engine calls `exec
 - Handle provisioning failures by retrying with fallback pools from the Reconciler's ranked list
 - **Handle back-pressure:** when the Reconciler returns `CAPACITY_EXHAUSTED`, queue the task and attempt corrective action (see [Back-Pressure and Capacity Management](#back-pressure-and-capacity-management))
 - Return the task result (or a structured error) to the Workflow Engine
-- Ensure worker cleanup occurs regardless of task outcome (delegates to the Lifecycle Manager)
+- Ensure worker cleanup occurs regardless of task outcome (releases worker back to the pool via the Provisioner)
 
 **Back-pressure handling:**
 
@@ -237,17 +232,6 @@ Defines the security and governance boundaries applied to Workers based on workl
 - Provide the Reconciler with pool eligibility constraints
 
 **MVP scope:** Container isolation + namespace separation within OpenShift. The interface accommodates future policy-based sandboxing (e.g. OpenShell) without rearchitecting.
-
-### Lifecycle Manager
-
-Manages Workers from creation to cleanup within a Worker Pool. Operates as a per-pool component.
-
-**Responsibilities:**
-- Track all Workers in the pool (pending, running, completed, failed)
-- Enforce pool-level capacity limits (reject provisioning requests when at capacity)
-- Reclaim resources from completed or failed Workers (container cleanup, volume teardown)
-- Handle Worker failures (detect unresponsive Workers, mark as failed, trigger re-provisioning if policy allows)
-- Report pool state to the Resource Monitor
 
 ## Worker Pool Registration
 
@@ -462,7 +446,6 @@ sequenceDiagram
     participant EER as EE Registry
     participant CP as Credential Provider
     participant D as Dispatcher
-    participant LM as Lifecycle Manager
     participant W as Worker
 
     WE->>TE: execute_task(task definition)
@@ -489,10 +472,10 @@ sequenceDiagram
     P->>IP: get security context for workload type
     IP-->>P: namespace, network policy, seccomp profile
 
-    P->>LM: create worker (image, resources, security context)
-    LM-->>P: worker created, worker ID
+    P->>W: acquire worker (claim via Lease)
+    W-->>P: WorkerHandle (pod_name, namespace)
 
-    P-->>TE: worker provisioned (worker ID)
+    P-->>TE: worker provisioned (WorkerHandle)
 
     TE->>D: dispatch task to worker
 
@@ -508,15 +491,14 @@ sequenceDiagram
 
     D-->>TE: task result
 
-    TE->>LM: release worker
-    LM->>W: terminate + cleanup
+    TE->>P: release worker (release Lease)
 
     TE-->>WE: task result
 ```
 
 ### Task Execution: Critical Path (Simplified)
 
-The essential sequence through the critical path components, omitting supporting concerns (Isolation Policy, EE Registry, Resource Monitor, Lifecycle Manager).
+The essential sequence through the critical path components, omitting supporting concerns (Isolation Policy, EE Registry, Resource Monitor).
 
 ```mermaid
 sequenceDiagram
@@ -592,7 +574,6 @@ sequenceDiagram
     participant TE as Task Executor
     participant R as Reconciler
     participant P as Provisioner
-    participant LM as Lifecycle Manager
     participant RM as Resource Monitor
 
     WE->>TE: execute_task(task definition)
@@ -600,42 +581,36 @@ sequenceDiagram
     TE->>R: resolve pool
     R-->>TE: ranked list [Pool A, Pool B]
 
-    TE->>P: provision worker in Pool A
-    P->>LM: create worker
-    LM-->>P: failure (image pull error)
-    P-->>TE: provisioning failed
+    TE->>P: acquire worker in Pool A
+    P-->>TE: failure (no ready workers / image pull error)
 
     Note over TE: Retry with next pool in ranked list
 
-    TE->>P: provision worker in Pool B
-    P->>LM: create worker
-    LM-->>P: worker created
-    P-->>TE: worker provisioned
+    TE->>P: acquire worker in Pool B
+    P-->>TE: WorkerHandle
 
     Note over TE: Continue with dispatch...
 
-    Note over RM: Resource Monitor detects<br/>Pool A image pull failures,<br/>marks pool as degraded
+    Note over RM: Resource Monitor detects<br/>Pool A failures,<br/>marks pool as degraded
 ```
 
 ### Worker Lifecycle
 
-The lifecycle of a Worker from creation through cleanup.
+The lifecycle of a Worker within a shared pool. Workers are long-lived pods managed by a Kubernetes Deployment. The Provisioner claims and releases them via Leases; Kubernetes handles pod replacement if one fails.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Pending: Provisioner requests creation
-    Pending --> Pulling: Lifecycle Manager pulls EE image
-    Pulling --> Starting: Image pulled, container starting
-    Starting --> Running: Container ready, task dispatched
+    [*] --> Idle: Pod started by Deployment (warm pool)
+    Idle --> Claimed: Provisioner acquires Lease
+    Claimed --> Running: Dispatcher executes task via pods/exec
     Running --> Succeeded: Task completed successfully
     Running --> Failed: Task error or timeout
     Running --> Terminated: Cancellation signal received
-    Pulling --> Failed: Image pull failure
-    Starting --> Failed: Container start failure
-    Succeeded --> Cleanup: Lifecycle Manager reclaims resources
-    Failed --> Cleanup: Lifecycle Manager reclaims resources
-    Terminated --> Cleanup: Lifecycle Manager reclaims resources
-    Cleanup --> [*]
+    Succeeded --> Idle: Provisioner releases Lease
+    Failed --> Idle: Provisioner releases Lease
+    Terminated --> Idle: Provisioner releases Lease
+    Idle --> [*]: Pod deleted (scale-down or node drain)
+    Claimed --> Idle: Lease expires (scheduler crash safety net)
 ```
 
 ### Credential Injection with Isolation
@@ -851,7 +826,6 @@ Per the July 2026 planning decisions ([ANSTRAT-1803](https://redhat.atlassian.ne
 | Resource Monitor | Pod/agent list view for administrators |
 | Credential Provider | Credential injection scoped by workload type |
 | Isolation Policy | Container isolation + namespace separation (no OpenShell/policy-based sandboxing) |
-| Lifecycle Manager | Pod lifecycle management (create, monitor, cleanup) |
 
 ### Future Phases
 

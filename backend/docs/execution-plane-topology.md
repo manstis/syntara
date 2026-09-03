@@ -56,7 +56,7 @@ This statelessness is possible because **Temporal is the durable retry layer**. 
 4. The Service routes the request to a healthy replica.
 5. The new replica starts the full pipeline from scratch (reconcile → provision → dispatch).
 
-No coordination between replicas is needed. No work is lost. The worker that was provisioned (if any) will be released by Lease expiry or Lifecycle Manager cleanup.
+No coordination between replicas is needed. No work is lost. The worker that was provisioned (if any) will be released by Lease expiry (30s TTL).
 
 ### Concurrent Replica Behaviour
 
@@ -133,7 +133,6 @@ graph TB
 | Isolation Policy | Library within the Task Executor process | Policy evaluation logic; no external dependencies |
 | Pool Registry | PostgreSQL (shared Syntara database) | Durable storage for pool registrations; shared with the rest of the Syntara backend |
 | Resource Monitor | Redis (shared Syntara Redis) + periodic polling | Capacity and health data cached in Redis; a background poller in the Task Executor updates it |
-| Lifecycle Manager | Runs within each Worker Pool namespace | Per-pool concern; watches pod lifecycle events via the Kubernetes API |
 | EE Registry | PostgreSQL (shared Syntara database) | OCI image catalogue; read by the Provisioner at provision time |
 
 ### Resource Monitor Polling
