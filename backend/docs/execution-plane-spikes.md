@@ -151,7 +151,7 @@ Connect the Task Executor to the real Workflow Engine. Route a workflow node thr
 **Scope:**
 - Identify the integration point in the Workflow Engine where node execution is dispatched (likely the Temporal activity implementation)
 - Call `execute_task` for eligible node types (action nodes, agentic nodes) while preserving the existing path for nodes that don't need the Execution Plane
-- Map the workflow node's configuration (EE image, credentials, affinity labels) into a `TaskDefinition`
+- Map the workflow node's configuration (credentials, affinity labels, workload type) into a `TaskDefinition`
 - Map the `TaskResult` back into the workflow's activity output format
 - End-to-end test: trigger a workflow with a node configured for Execution Plane dispatch, observe it routed to a worker pod, result returned to the workflow
 

@@ -133,7 +133,6 @@ graph TB
 | Isolation Policy | Library within the Task Executor process | Policy evaluation logic; no external dependencies |
 | Pool Registry | PostgreSQL (shared Syntara database) | Durable storage for pool registrations; shared with the rest of the Syntara backend |
 | Resource Monitor | Redis (shared Syntara Redis) + periodic polling | Capacity and health data cached in Redis; a background poller in the Task Executor updates it |
-| EE Registry | PostgreSQL (shared Syntara database) | OCI image catalogue; read by the Provisioner at provision time |
 
 ### Resource Monitor Polling
 
@@ -168,7 +167,7 @@ The Task Executor needs network access to:
 | Target | Protocol | Purpose |
 |---|---|---|
 | Kubernetes API server | HTTPS (tcp/6443) | Pod management, exec, Leases, Deployments |
-| PostgreSQL | TCP (tcp/5432) | Pool Registry, EE Registry, Credential Provider |
+| PostgreSQL | TCP (tcp/5432) | Pool Registry, Credential Provider |
 | Redis | TCP (tcp/6379) | Resource Monitor capacity cache |
 | Worker Pods | via Kubernetes API (not direct) | Task dispatch is through `pods/exec`, not direct network |
 
