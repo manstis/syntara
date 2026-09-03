@@ -6,50 +6,9 @@ Reference: [ANSTRAT-1803](https://redhat.atlassian.net/browse/ANSTRAT-1803) — 
 
 ## Logical Components
 
-The Execution Plane comprises the following logical components:
+The Execution Plane comprises the following logical components, shown in three focused views.
 
-```mermaid
-graph TB
-    subgraph ControlPlane["Control Plane"]
-        WE["Workflow Engine"]
-        TE["Task Executor"]
-        R["Reconciler"]
-        P["Provisioner"]
-        D["Dispatcher"]
-        CP["Credential Provider"]
-        IP["Isolation Policy"]
-        RM["Resource Monitor"]
-        EER["Execution Environment Registry"]
-    end
-
-    subgraph EP1["Worker Pool A (e.g. On-Cluster OpenShift)"]
-        W1["Worker"]
-        W2["Worker"]
-    end
-
-    subgraph EP2["Worker Pool B (e.g. Remote OpenShift Cluster)"]
-        W3["Worker"]
-    end
-
-    WE -->|"execute_task(task definition)"| TE
-    TE -->|"resolve pool"| R
-    RM -->|"capacity + health"| R
-    R -->|"ReconcileResult"| TE
-    TE -->|"acquire worker"| P
-    TE -.->|"request scale-up (back-pressure)"| P
-    EER -->|"container image"| P
-    IP -->|"isolation constraints"| P
-    P -->|"WorkerHandle"| TE
-    TE -->|"dispatch task"| D
-    CP -->|"credentials"| D
-    D -->|"run task"| W1
-    D -->|"run task"| W3
-    TE -.->|"task result"| WE
-    RM -.->|"health probes"| W1
-    RM -.->|"health probes"| W3
-```
-
-**Simplified view — critical path only:**
+**Critical path** — the pipeline from task submission to result:
 
 ```mermaid
 graph LR
@@ -61,6 +20,62 @@ graph LR
     D -->|"inject credentials"| CP["Credential Provider"]
     D -->|"run task"| W["Worker Pool"]
     TE -.->|"task result"| WE
+```
+
+**Pool selection and provisioning** — how the Task Executor picks a pool and obtains a worker:
+
+```mermaid
+graph TB
+    TE["Task Executor"]
+
+    subgraph Selection["Pool Selection"]
+        R["Reconciler"]
+        RM["Resource Monitor"]
+        PR["Pool Registry"]
+    end
+
+    subgraph Provisioning["Worker Provisioning"]
+        P["Provisioner"]
+        EER["EE Registry"]
+        IP["Isolation Policy"]
+    end
+
+    subgraph EP1["Worker Pool A"]
+        W1["Worker"]
+        W2["Worker"]
+    end
+
+    subgraph EP2["Worker Pool B"]
+        W3["Worker"]
+    end
+
+    TE -->|"resolve pool"| R
+    R --> PR
+    RM -->|"capacity + health"| R
+    R -->|"ReconcileResult"| TE
+
+    TE -->|"acquire worker"| P
+    TE -.->|"scale-up (back-pressure)"| P
+    EER -->|"container image"| P
+    IP -->|"isolation constraints"| P
+    P -->|"WorkerHandle"| TE
+
+    P ---|"claim / release"| W1
+    P ---|"claim / release"| W3
+    RM -.->|"health probes"| EP1
+    RM -.->|"health probes"| EP2
+```
+
+**Task dispatch** — how a task reaches a claimed worker:
+
+```mermaid
+graph LR
+    TE["Task Executor"] -->|"dispatch task"| D["Dispatcher"]
+    D -->|"resolve credentials"| CP["Credential Provider"]
+    CP -->|"check access"| IP["Isolation Policy"]
+    D -->|"pods/exec (stdin JSON)"| W["Worker"]
+    W -->|"stdout JSON"| D
+    D -->|"TaskResult"| TE
 ```
 
 ### Task Executor
