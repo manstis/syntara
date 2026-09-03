@@ -176,7 +176,7 @@ class ReconcileResult:
 Creates a Worker within the selected Worker Pool. The Provisioner is an abstraction over the underlying infrastructure — different implementations handle different pool types (OpenShift pods, OpenShell sandboxes, Agent Sandbox, etc.).
 
 **Responsibilities:**
-- Acquire a Worker from the target pool (claim via Lease in a shared pool, or create a new pod for short-lived pools)
+- Acquire a Worker from the target pool (the mechanism — Lease claiming, sandbox creation, etc. — is determined by the Provisioner Backend)
 - Apply Isolation Policy constraints (namespace isolation, network policies, seccomp profiles)
 - Configure resource limits per the Worker definition
 - Report provisioning status (success, failure, timeout)
@@ -270,7 +270,7 @@ Accepts a pool registration request from an administrator and orchestrates the r
 - Pool name and description
 - Cluster endpoint (API server URL, kubeconfig, or connection details)
 - Platform type (OpenShift, RHEL)
-- Worker type and provisioner backend (see below)
+- Provisioner backend (see below)
 - Container image (OCI image reference — e.g. `quay.io/org/worker:latest`) and optional registry credentials for image pull
 - Labels (key/value pairs for affinity matching)
 - Connectivity metadata (reachable network endpoints)
@@ -279,27 +279,16 @@ Accepts a pool registration request from an administrator and orchestrates the r
 
 **Container image:** The container image is a required field when registering a pool. It defines the software stack that workers in the pool run (Python packages, Ansible collections, system libraries). The image may be specified directly as an OCI registry path, or in future it may be derived implicitly — for example, by selecting an extension for which the pool provides workers. The mechanism by which an extension maps to a container image is outside the scope of the Execution Plane; the Execution Plane requires only that a concrete OCI image reference is available at registration time. The Cluster Bootstrapper uses this image reference in the worker PodSpec when bootstrapping the pool's infrastructure.
 
-### Worker Type
-
-Each pool is registered with a worker type that determines how workers are provisioned and whether they persist between tasks.
-
-| Worker Type | Lifecycle | Provisioner Model | Description |
-|---|---|---|---|
-| **Short-lived** | Ephemeral — created per task, destroyed after | Create/destroy | A new worker is provisioned for each task and torn down on completion. No state carries between tasks. |
-| **Long-lived** | Persistent — claimed per task, released after | Claim/release (shared pool) | A pool of pre-provisioned workers is maintained. Workers are claimed for a task and returned to the pool on completion. |
-
-Worker type is orthogonal to provisioner backend — for example, a vanilla K8s pool can operate in either mode (Deployment with Lease claiming for long-lived, or pod-per-task for short-lived).
-
 ### Provisioner Backend
 
-Each pool is registered with a provisioner backend that determines the runtime technology used to create and manage workers.
+Each pool is registered with a provisioner backend that determines the runtime technology used to manage workers. The Provisioner's `acquire`/`release` interface abstracts over the underlying implementation — whether a backend maintains a warm pool of pre-provisioned workers or creates a fresh sandbox per task is internal to the backend. The Task Executor treats all backends identically: acquire a worker, dispatch the task, release the worker when the task completes.
 
-| Backend | Short-lived | Long-lived | Description |
-|---|---|---|---|
-| **Vanilla Kubernetes** | Yes | Yes (MVP) | Standard Kubernetes pods. Long-lived mode uses a Deployment with Lease-based claiming. |
-| **OpenShell** | Yes | No | NVIDIA policy-based sandboxing. Sandbox created per task, destroyed after. |
-| **Agent Sandbox** | Yes | Yes | K8s-native CRD-managed pools. Warm pool mode pre-provisions pods. |
-| **Substrate** | Yes | No | Custom substrate runtime. Sandbox created per task. |
+| Backend | Provisioning Model | Description |
+|---|---|---|
+| **Vanilla Kubernetes** | Warm pool (MVP) | Deployment maintains N replica worker pods. Workers claimed via Kubernetes Lease, released on task completion. |
+| **OpenShell** | Per-task sandbox | NVIDIA policy-based sandboxing. Sandbox created per task, destroyed after. |
+| **Agent Sandbox** | Warm pool | K8s-native CRD-managed pools. Pre-provisions pods via SandboxWarmPool CRD. |
+| **Substrate** | Per-task sandbox | Custom substrate runtime. Sandbox created per task. |
 
 ### Platform
 
@@ -318,7 +307,7 @@ Configures the target infrastructure to support worker provisioning. What the bo
 - Create or validate the target namespace on the cluster
 - Deploy RBAC resources (ServiceAccount, Role, RoleBinding) for the scheduler/provisioner
 - Install and configure the provisioner backend runtime (if required)
-- Deploy worker Deployment/ReplicaSet using the registered container image (for long-lived vanilla K8s pools)
+- Deploy worker Deployment/ReplicaSet using the registered container image (for warm-pool backends)
 - Configure network policies and security context constraints
 - Validate that the cluster is ready to accept workers
 - Report bootstrap status (success, partial, failed)
@@ -327,11 +316,10 @@ Configures the target infrastructure to support worker provisioning. What the bo
 
 | Backend | Platform | Bootstrap Actions |
 |---|---|---|
-| Vanilla K8s (long-lived) | OpenShift | Create namespace, deploy RBAC, deploy worker Deployment (using registered container image), configure readiness/liveness probes |
-| Vanilla K8s (short-lived) | OpenShift | Create namespace, deploy RBAC, configure pod template (using registered container image), configure pod security context |
+| Vanilla Kubernetes | OpenShift | Create namespace, deploy RBAC, deploy worker Deployment (using registered container image), configure readiness/liveness probes |
 | OpenShell | OpenShift | Create namespace, deploy RBAC, install OpenShell operator (Helm), configure SCCs, deploy compute driver |
-| Agent Sandbox | OpenShift | Create namespace, deploy RBAC, install Agent Sandbox operator, create SandboxWarmPool CRD |
-| Vanilla K8s | RHEL | Configure Podman runtime, deploy agent binary, establish connectivity to control plane |
+| Agent Sandbox | OpenShift | Create namespace, deploy RBAC, install Agent Sandbox operator, create SandboxWarmPool CRD (using registered container image) |
+| Vanilla Kubernetes | RHEL | Configure Podman runtime, deploy agent binary, establish connectivity to control plane |
 
 ### Pool Registry
 
@@ -372,7 +360,7 @@ sequenceDiagram
     participant RM as Resource Monitor
     participant R as Reconciler
 
-    Admin->>RP: register pool (name, endpoint, platform: OpenShift,<br/>backend: vanilla-k8s, worker type: long-lived,<br/>image: quay.io/org/worker:1.0,<br/>labels: {region: eu-west, gpu: true})
+    Admin->>RP: register pool (name, endpoint, platform: OpenShift,<br/>backend: vanilla-k8s,<br/>image: quay.io/org/worker:1.0,<br/>labels: {region: eu-west, gpu: true})
 
     RP->>RP: validate endpoint reachability
     RP->>RP: validate cluster credentials
@@ -593,7 +581,7 @@ sequenceDiagram
 
 ### Worker Lifecycle
 
-The lifecycle of a Worker within a shared pool. Workers are long-lived pods managed by a Kubernetes Deployment. The Provisioner claims and releases them via Leases; Kubernetes handles pod replacement if one fails.
+The lifecycle of a Worker within a warm-pool backend (e.g. Vanilla Kubernetes). Workers are pods managed by a Kubernetes Deployment. The Provisioner claims and releases them via Leases; Kubernetes handles pod replacement if one fails.
 
 ```mermaid
 stateDiagram-v2

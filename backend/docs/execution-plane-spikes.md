@@ -40,7 +40,7 @@ Define the component contracts before any implementation. This is the foundation
 - `TaskDefinition` / `TaskResult` — what the Workflow Engine passes in and gets back
 - `ProvisionerBackend` protocol — `acquire` / `release` / async variants
 - `WorkerHandle` — what a claimed worker looks like to the caller
-- `PoolRegistration` — the data model for a registered pool (name, endpoint, platform, backend, worker type, labels, status)
+- `PoolRegistration` — the data model for a registered pool (name, endpoint, platform, backend, container image, labels, status)
 - `ReconcileResult` — structured result with `available_pools`, `exhausted_pools`, `ineligible_pools`, `outcome` enum
 - `Reconciler` interface — `resolve_pool(task_requirements) -> ReconcileResult`
 - `Dispatcher` interface — `dispatch(handle, payload, credentials) -> result`
@@ -86,7 +86,7 @@ Adapt the `k8s-agent-pool` prototype to prove the Lease-based shared pool works 
 Implement pool registration as a persistent, API-driven operation. This is the admin-time side — registering a cluster before it can be used at runtime.
 
 **Scope:**
-- `PoolRegistration` database model (SQLModel) — name, endpoint, platform, backend, worker type, labels, capacity, status
+- `PoolRegistration` database model (SQLModel) — name, endpoint, platform, backend, container image, labels, capacity, status
 - CRUD API endpoints for pool registrations
 - Registration status lifecycle: registering → validating → bootstrapping → active → failed
 - Cluster Bootstrapper for vanilla K8s on OpenShift: create namespace, deploy RBAC, deploy worker Deployment
