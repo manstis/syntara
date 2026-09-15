@@ -8,9 +8,9 @@ from execution_plane.script_executor import execute_script
 from temporalio.exceptions import ApplicationError
 
 from syntara.core.config.base import get_settings
-from syntara.workflows.workflow_engine.activities.script_activity import execute_script_activity
+from syntara.workflows.workflow_engine.activities.ep.ep_dispatch_activity import execute_script_activity
 
-ACTIVITY_INFO_PATH = "syntara.workflows.workflow_engine.activities.script_activity.activity.info"
+ACTIVITY_INFO_PATH = "syntara.workflows.workflow_engine.activities.ep.ep_dispatch_activity.activity.info"
 
 
 @pytest.fixture(autouse=True)

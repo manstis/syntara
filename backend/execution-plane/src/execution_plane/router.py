@@ -5,15 +5,14 @@ from typing import Annotated
 import structlog
 from fastapi import Depends, Query
 from pydantic import BaseModel, ConfigDict
-from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
-
-from syntara.authz.dependencies import PermissionChecker
-from syntara.core.database.session import get_db
-from syntara.core.syntara_router import SyntaraRouter
 
 from execution_plane.models.execution_target import ExecutionTarget
 from execution_plane.models.work_item import WorkItem
+from execution_plane.services import ExecutionTargetRegistry, WorkItemRegistry
+from syntara.authz.dependencies import PermissionChecker
+from syntara.core.database.session import get_db
+from syntara.core.syntara_router import SyntaraRouter
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -45,6 +44,14 @@ class WorkItemListResponse(BaseModel):
     total: int | None = None
 
 
+def get_execution_target_registry(db: Annotated[AsyncSession, Depends(get_db)]) -> ExecutionTargetRegistry:
+    return ExecutionTargetRegistry(db)
+
+
+def get_work_item_registry(db: Annotated[AsyncSession, Depends(get_db)]) -> WorkItemRegistry:
+    return WorkItemRegistry(db)
+
+
 @router.get(
     "/execution-targets",
     operation_id="list_execution_targets",
@@ -53,14 +60,12 @@ class WorkItemListResponse(BaseModel):
     dependencies=[Depends(_perm_et_read)],
 )
 async def list_execution_targets(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    registry: Annotated[ExecutionTargetRegistry, Depends(get_execution_target_registry)],
     limit: int = Query(default=20, ge=1, le=100),
 ) -> ExecutionTargetListResponse:
-    """List execution targets."""
-    result = await db.exec(select(ExecutionTarget).limit(limit))
-    items = result.all()
+    items = await registry.list(limit)
     logger.info("Listed execution targets", count=len(items))
-    return ExecutionTargetListResponse(resources=list(items))
+    return ExecutionTargetListResponse(resources=items)
 
 
 @router.get(
@@ -71,11 +76,9 @@ async def list_execution_targets(
     dependencies=[Depends(_perm_wi_read)],
 )
 async def list_work_items(
-    db: Annotated[AsyncSession, Depends(get_db)],
+    registry: Annotated[WorkItemRegistry, Depends(get_work_item_registry)],
     limit: int = Query(default=20, ge=1, le=100),
 ) -> WorkItemListResponse:
-    """List work items."""
-    result = await db.exec(select(WorkItem).limit(limit))
-    items = result.all()
+    items = await registry.list(limit)
     logger.info("Listed work items", count=len(items))
-    return WorkItemListResponse(resources=list(items))
+    return WorkItemListResponse(resources=items)

@@ -3,24 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import logging
-import os
-import sys
-from datetime import UTC, datetime
-from pathlib import Path
 
 import asyncpg
 import structlog
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from temporalio.client import Client
-from temporalio.exceptions import ApplicationError
-from temporalio.service import TLSConfig
 
+from execution_plane.config import get_ep_settings
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.script_executor import ScriptExecutionError, execute_script
+from execution_plane.temporal_client import send_temporal_callback
+from execution_plane.work_store import WorkStore
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -28,71 +22,57 @@ POLL_INTERVAL_SECONDS = 5
 NOTIFY_CHANNEL = "execution_plane_work_items"
 
 
-async def _claim_pending_items(session: AsyncSession) -> list[WorkItem]:
-    """SELECT ... FOR UPDATE SKIP LOCKED to claim pending work items."""
-    result = await session.execute(
-        select(WorkItem)
-        .where(WorkItem.status == WorkItemStatus.PENDING)
-        .order_by(WorkItem.created_at)
-        .limit(10)
-        .with_for_update(skip_locked=True)
-    )
-    items = list(result.scalars().all())
-    for item in items:
-        item.status = WorkItemStatus.CLAIMED
-        item.claimed_at = datetime.now(UTC)
-    if items:
-        await session.commit()
-    return items
-
-
-async def _execute_work_item(item: WorkItem, temporal_client: Client) -> None:
-    """Run the script from the work item payload and complete the Temporal activity."""
+async def _process_item(item: WorkItem, store: WorkStore) -> None:
+    """Execute script, persist result, then send Temporal callback."""
     wi_id = str(item.id)
     input_config: dict = item.payload.get("input_config", {})
     output_config: dict | None = item.payload.get("output_config")
-    task_token = base64.b64decode(item.activity_handle)
-    handle = temporal_client.get_async_activity_handle(task_token=task_token)
 
     try:
         activity_result = await execute_script(input_config, output_config)
-        await handle.complete(activity_result)
-        logger.info("Work item completed successfully", work_item_id=wi_id)
-
+        await store.set_result(item, activity_result, WorkItemStatus.COMPLETED)
+        logger.info("Script executed successfully", work_item_id=wi_id)
     except ScriptExecutionError as e:
+        await store.set_result(item, {"error": str(e), "error_type": "ScriptExecutionError"}, WorkItemStatus.FAILED)
         logger.warning("Script execution failed", work_item_id=wi_id, error=str(e))
-        await handle.fail(ApplicationError(str(e), type="ScriptExecutionError", non_retryable=True))
-        raise
-
     except Exception as e:
-        logger.exception("Unexpected error processing work item", work_item_id=wi_id, error=str(e))
-        await handle.fail(ApplicationError(str(e), type=type(e).__name__, non_retryable=True))
-        raise
+        await store.set_result(item, {"error": str(e), "error_type": type(e).__name__}, WorkItemStatus.FAILED)
+        logger.exception("Unexpected error processing work item", work_item_id=wi_id)
+
+    if await send_temporal_callback(item):
+        await store.mark_signal_delivered(item)
 
 
-async def _process_item(item: WorkItem, session: AsyncSession, temporal_client: Client) -> None:
-    """Process one work item: execute, then mark completed or failed."""
-    wi_id = str(item.id)
-    try:
-        await _execute_work_item(item, temporal_client)
-        item.status = WorkItemStatus.COMPLETED
-        item.completed_at = datetime.now(UTC)
-    except Exception:  # noqa: BLE001
-        item.status = WorkItemStatus.FAILED
-        item.completed_at = datetime.now(UTC)
-        logger.warning("Work item failed", work_item_id=wi_id)
-    finally:
-        await session.commit()
+async def _recover_undelivered(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    """Retry callbacks for items that completed but were never confirmed delivered.
+
+    Runs once at startup. Bounded query: only terminal items with NULL signaled_at.
+    All recovery happens in a single session — no re-fetch needed.
+    """
+    async with session_factory() as session:
+        store = WorkStore(session)
+        items = await store.find_undelivered()
+        if not items:
+            return
+        logger.info("Recovering undelivered Temporal callbacks", count=len(items))
+        for item in items:
+            if await send_temporal_callback(item):
+                await store.mark_signal_delivered(item)
 
 
 async def _listen_loop(database_url: str, wakeup_event: asyncio.Event) -> None:
-    """Hold a LISTEN connection; set wakeup_event on every NOTIFY."""
-    # asyncpg uses plain postgresql:// (not postgresql+asyncpg://)
-    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    """Hold a LISTEN connection; set wakeup_event on every NOTIFY.
+
+    Known gap: a zombie TCP connection (NAT expiry, silent load-balancer drop,
+    VM migration) will not trigger the termination listener, so the worker
+    silently falls back to POLL_INTERVAL_SECONDS cadence until the OS-level
+    TCP keepalive eventually kills the connection. Fix: periodic self-NOTIFY or
+    a LISTEN/UNLISTEN probe to detect stale connections. See AAP-92715.
+    """
     while True:
         try:
             disconnected = asyncio.Event()
-            conn: asyncpg.Connection = await asyncpg.connect(pg_url)
+            conn: asyncpg.Connection = await asyncpg.connect(database_url)
             try:
                 conn.add_termination_listener(lambda _, ev=disconnected: ev.set())
                 await conn.add_listener(NOTIFY_CHANNEL, lambda *_: wakeup_event.set())
@@ -108,75 +88,42 @@ async def _listen_loop(database_url: str, wakeup_event: asyncio.Event) -> None:
 
 async def _poll_loop(
     session_factory: async_sessionmaker[AsyncSession],
-    temporal_client: Client,
     wakeup_event: asyncio.Event,
 ) -> None:
-    """Poll for and process pending work items; wake immediately on pg_notify."""
+    """Claim one work item at a time; sleep between polls when queue is empty."""
     logger.info("Execution Plane worker started, polling for work items")
     wakeup_event.set()  # process any items already present at startup
     while True:
+        item = None
         try:
             async with session_factory() as session:
-                items = await _claim_pending_items(session)
-                if items:
-                    logger.info("Claimed work items", count=len(items))
-                for item in items:
-                    async with session_factory() as item_session:
-                        # Re-fetch so changes are tracked in this session
-                        refreshed = await item_session.get(WorkItem, item.id)
-                        if refreshed:
-                            await _process_item(refreshed, item_session, temporal_client)
+                store = WorkStore(session)
+                item = await store.claim_one()
+                if item:
+                    logger.info("Claimed work item", work_item_id=str(item.id))
+                    await _process_item(item, store)
         except Exception:
             logger.exception("Error in polling loop, will retry")
-        wakeup_event.clear()
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(wakeup_event.wait(), timeout=POLL_INTERVAL_SECONDS)
 
-
-async def _create_temporal_client() -> Client:
-    """Connect to Temporal using the same env vars as the Syntara worker."""
-    temporal_address = os.environ.get("APP_TEMPORAL_ADDRESS", "localhost:7233")
-    temporal_namespace = os.environ.get("APP_TEMPORAL_NAMESPACE", "default")
-
-    tls: TLSConfig | None = None
-    if os.environ.get("APP_S2S_TLS_ENABLED", "").lower() == "true":
-        ca = os.environ.get("APP_S2S_TLS_CA_CERT_PATH")
-        cert = os.environ.get("APP_S2S_TLS_CERT_PATH")
-        key = os.environ.get("APP_S2S_TLS_KEY_PATH")
-        if ca and cert and key:
-            tls = TLSConfig(
-                server_root_ca_cert=Path(ca).read_bytes(),
-                client_cert=Path(cert).read_bytes(),
-                client_private_key=Path(key).read_bytes(),
-            )
-
-    client = await Client.connect(temporal_address, namespace=temporal_namespace, tls=tls)
-    logger.info(
-        "Connected to Temporal",
-        address=temporal_address,
-        namespace=temporal_namespace,
-        tls_enabled=tls is not None,
-    )
-    return client
+        if not item:
+            wakeup_event.clear()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(wakeup_event.wait(), timeout=POLL_INTERVAL_SECONDS)
 
 
 async def _run() -> None:
-    database_url = os.environ.get("APP_DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if not database_url:
-        logger.error("DATABASE_URL (or APP_DATABASE_URL) environment variable is required")
-        sys.exit(1)
+    settings = get_ep_settings()
 
-    engine = create_async_engine(database_url)
+    engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    temporal_client = await _create_temporal_client()
+
+    await _recover_undelivered(session_factory)
 
     wakeup_event = asyncio.Event()
     try:
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(_listen_loop(database_url, wakeup_event), name="ep-listener")
-            tg.create_task(
-                _poll_loop(session_factory, temporal_client, wakeup_event), name="ep-poll"
-            )
+            tg.create_task(_listen_loop(settings.database_url_asyncpg, wakeup_event), name="ep-listener")
+            tg.create_task(_poll_loop(session_factory, wakeup_event), name="ep-poll")
     finally:
         await engine.dispose()
 

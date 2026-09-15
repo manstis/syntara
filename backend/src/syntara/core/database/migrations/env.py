@@ -35,7 +35,9 @@ if config.config_file_name is not None:
 # Set target metadata from models
 target_metadata = SQLModel.metadata
 
-# Schemas managed by other packages (execution_plane, etc.) — never touch these.
+# Schemas owned by external packages — excluded from Syntara autogenerate.
+# See docs/execution-plane/integration.md for why execution_plane is managed
+# separately and what changes when EP becomes a standalone service.
 _EXTERNAL_SCHEMAS = {"execution_plane"}
 
 

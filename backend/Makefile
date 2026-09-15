@@ -600,7 +600,8 @@ services-clean: ## Stop all services and remove all data (destructive)
 OPENAPI_SPEC ?= src/syntara/schemas/openapi.yaml
 OPENAPI_PUBLIC_SPEC ?= src/syntara/schemas/openapi-public.yaml
 OPENAPI_PUBLIC_SPEC_JSON ?= src/syntara/schemas/openapi-public.json
-OPENAPI_GENERATED_FILES = $(OPENAPI_SPEC) $(OPENAPI_PUBLIC_SPEC) $(OPENAPI_PUBLIC_SPEC_JSON)
+OPENAPI_EP_SPEC ?= src/syntara/schemas/execution_plane/openapi.yaml
+OPENAPI_GENERATED_FILES = $(OPENAPI_SPEC) $(OPENAPI_PUBLIC_SPEC) $(OPENAPI_PUBLIC_SPEC_JSON) $(OPENAPI_EP_SPEC)
 OPENAPI_BASE_REF ?= devel
 VERBOSITY ?= -v
 
@@ -640,11 +641,23 @@ api-spec-drift-public: ## Check that committed public spec matches the generated
 	@echo "🔍 Checking public OpenAPI spec is up to date..."
 	@uv run python tools/export_openapi.py --public 2>/dev/null | uv run python tools/ci/check_openapi_spec.py $(OPENAPI_PUBLIC_SPEC) $(VERBOSITY)
 
+.PHONY: api-spec-bundle-ep
+api-spec-bundle-ep: ## Generate the Execution Plane OpenAPI spec from the FastAPI router
+	@echo "📦 Generating Execution Plane OpenAPI spec..."
+	@uv run python tools/export_openapi.py --execution-plane -o $(OPENAPI_EP_SPEC) 2>/dev/null
+	@uv run pre-commit run yamlfmt --files $(OPENAPI_EP_SPEC) > /dev/null 2>&1 || true
+	@echo "✅ EP spec written to $(OPENAPI_EP_SPEC)"
+
+.PHONY: api-spec-drift-ep
+api-spec-drift-ep: ## Check that committed EP spec matches the generated spec (VERBOSITY=-v/-vv/-vvv)
+	@echo "🔍 Checking Execution Plane OpenAPI spec is up to date..."
+	@uv run python tools/export_openapi.py --execution-plane 2>/dev/null | uv run python tools/ci/check_openapi_spec.py $(OPENAPI_EP_SPEC) $(VERBOSITY)
+
 .PHONY: api-spec-bundle-all
-api-spec-bundle-all: api-spec-bundle api-spec-bundle-public ## Bundle both full and public specs
+api-spec-bundle-all: api-spec-bundle api-spec-bundle-public api-spec-bundle-ep ## Bundle both full and public specs, and regenerate EP spec
 
 .PHONY: api-spec-drift-all
-api-spec-drift-all: api-spec-drift api-spec-drift-public ## Check both specs match implementation
+api-spec-drift-all: api-spec-drift api-spec-drift-public api-spec-drift-ep ## Check all specs match implementation
 
 .PHONY: print-openapi-generated-files
 print-openapi-generated-files: ## Print the list of generated OpenAPI spec files (for CI drift checks)

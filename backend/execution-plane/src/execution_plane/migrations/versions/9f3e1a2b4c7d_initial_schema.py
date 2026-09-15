@@ -6,16 +6,16 @@ Create Date: 2026-09-14
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
 revision: str = "9f3e1a2b4c7d"
-down_revision: Union[str, Sequence[str], None] = None
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = None
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 EP = "execution_plane"
 
@@ -43,7 +43,7 @@ def upgrade() -> None:
     op.create_table(
         "work_items",
         sa.Column("id", sa.UUID(), nullable=False),
-        sa.Column("execution_id", sa.UUID(), nullable=False),
+        sa.Column("work_correlation_id", sa.UUID(), nullable=False),
         sa.Column("activity_handle", sa.Text(), nullable=False),
         sa.Column("status", sa.String(), nullable=False),
         sa.Column("execution_target_id", sa.UUID(), nullable=True),
@@ -52,6 +52,7 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("signaled_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(
             ["execution_target_id"],
             [f"{EP}.execution_targets.id"],
@@ -59,7 +60,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         schema=EP,
     )
-    op.create_index("ix_work_items_execution_id", "work_items", ["execution_id"], schema=EP)
+    op.create_index("ix_work_items_work_correlation_id", "work_items", ["work_correlation_id"], schema=EP)
     op.create_index("ix_work_items_status", "work_items", ["status"], schema=EP)
 
     # Partial index for the hot claiming path: SELECT ... FOR UPDATE SKIP LOCKED

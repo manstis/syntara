@@ -23,19 +23,17 @@ class WorkItemStatus(StrEnum):
 
 
 class WorkItem(SQLModel, table=True):
-    """A unit of work written by the Temporal Worker and consumed by the Task Executor.
-
-    Temporal writes this row (including the activity_handle) before calling POST /schedule.
-    The Task Executor polls for PENDING rows, claims them, dispatches, and writes the result.
-    """
+    """A unit of work written by the Temporal Worker and consumed by the Task Executor."""
 
     __tablename__ = "work_items"
     __table_args__ = {"schema": EP_SCHEMA}
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
 
-    # Opaque reference into public.execution — no declared FK to allow schema separation.
-    execution_id: uuid.UUID = Field(index=True)
+    # Opaque correlation handle supplied by the caller (e.g. Temporal workflow_id).
+    # Named generically so non-Temporal callers can use it without confusion with
+    # Syntara's own execution_id concept.
+    work_correlation_id: uuid.UUID = Field(index=True)
 
     # Temporal async completion token. Held by the Task Executor until the terminal event
     # is received from the execution plane.
@@ -58,3 +56,7 @@ class WorkItem(SQLModel, table=True):
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     claimed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     completed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    # Set after handle.complete() / handle.fail() returns successfully.
+    # NULL means the Temporal signal may not have been delivered — recovery
+    # queries use this to retry. See docs/execution-plane/integration.md.
+    signaled_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))

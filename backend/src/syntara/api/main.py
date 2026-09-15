@@ -217,9 +217,10 @@ async def _lifespan_startup(app: FastAPI) -> dict[str, Any]:  # noqa: PLR0915
     else:
         logger.warning("Router discovery disabled - no routers will be automatically registered")
 
-    # Extraction boundary: execution_plane is a candidate for an independent service.
-    # This mounts the EP API into Syntara; if execution_plane becomes standalone,
-    # this registration (and the ep_router import) moves out with it.
+    # BOUNDARY CROSSING — see docs/execution-plane/integration.md.
+    # The EP public API (GET /execution-targets, GET /work-items) is temporarily
+    # hosted by Syntara. When the EP worker becomes a standalone service this
+    # include_router call and its import move out with it.
     app.include_router(ep_router)
 
     # Register WebSocket router manually (excluded from router discovery)
