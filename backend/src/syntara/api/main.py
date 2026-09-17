@@ -218,7 +218,7 @@ async def _lifespan_startup(app: FastAPI) -> dict[str, Any]:  # noqa: PLR0915
         logger.warning("Router discovery disabled - no routers will be automatically registered")
 
     # BOUNDARY CROSSING — see docs/execution-plane/integration.md.
-    # The EP public API (GET /execution-targets, GET /work-items) is temporarily
+    # The EP public API (GET /execution_targets, GET /work_items) is temporarily
     # hosted by Syntara. When the EP worker becomes a standalone service this
     # include_router call and its import move out with it.
     app.include_router(ep_router)

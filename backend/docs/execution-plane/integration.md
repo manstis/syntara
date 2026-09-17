@@ -52,7 +52,7 @@ flowchart TD
     end
 
     C -->|"GET /api/v1/workflows/"| SW
-    C -->|"GET /api/execution-plane/v1/execution-targets"| SW
+    C -->|"GET /api/execution_plane/v1/execution_targets"| SW
     SW -->|"SELECT execution_plane.execution_targets\nboundary (1)"| DB
 
     SW -->|"schedule script activity"| STW
@@ -90,10 +90,10 @@ flowchart TD
     end
 
     C -->|"GET /api/v1/workflows/"| SW
-    C -->|"GET /api/execution-plane/v1/execution-targets"| SW
+    C -->|"GET /api/execution_plane/v1/execution_targets"| SW
 
     SW -->|"SELECT syntara.workflows"| SDB
-    SW -. "reverse-proxy\nGET /api/execution-plane/v1/...\nboundar (1)" .-> EPWS
+    SW -. "reverse-proxy\nGET /api/execution_plane/v1/...\nboundar (1)" .-> EPWS
 
     STW -->|"POST /submit\nboundary (2)"| EPWS
     EPWS -->|"INSERT work_items"| EPDB
@@ -111,6 +111,6 @@ Status of the system boundaries in this hypothetical state:
 
 | Current | Future |
 |---|---|
-| Boundary (1): EP router mounted in Syntara web server | Syntara reverse-proxies `/api/execution-plane/v1/...` to the EP web server [speculative]; auth remains Syntara's responsibility, so EP does not import Syntara's auth dependencies |
+| Boundary (1): EP router mounted in Syntara web server | Syntara reverse-proxies `/api/execution_plane/v1/...` to the EP web server [speculative]; auth remains Syntara's responsibility, so EP does not import Syntara's auth dependencies |
 | Boundary (2): `INSERT work_items` + `pg_notify` | `POST /submit` — Syntara hands work to the EP web server; EP manages its own DB writes and worker wakeup internally |
 | Boundary (3): gRPC `handle.complete()` direct to Temporal | EP no longer calls Temporal directly; EP worker `POST`s the result to a Syntara callback endpoint and Syntara calls `handle.complete()` |

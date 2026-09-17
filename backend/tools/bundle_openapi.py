@@ -38,7 +38,7 @@ _BASE_SHARED_SCHEMAS_FILE = SCHEMAS_DIR / "base" / "shared-resources.openapi.yam
 # Folders in this set are skipped during discovery.
 _SKIP_DIRS = {
     "base",  # shared base schemas, not a domain spec
-    # EP spec has a different URL prefix (/api/execution-plane/v1) and is managed
+    # EP spec has a different URL prefix (/api/execution_plane/v1) and is managed
     # separately from the main bundle. See tools/export_openapi.py --ep and the
     # api-spec-bundle-ep / api-spec-drift-ep Makefile targets.
     "execution_plane",

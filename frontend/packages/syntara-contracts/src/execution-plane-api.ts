@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-  '/api/execution-plane/v1/execution-targets': {
+  '/api/execution_plane/v1/execution_targets': {
     parameters: {
       query?: never
       header?: never
@@ -24,7 +24,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/execution-plane/v1/work-items': {
+  '/api/execution_plane/v1/work_items': {
     parameters: {
       query?: never
       header?: never
@@ -50,6 +50,7 @@ export interface components {
   schemas: {
     /**
      * BackendType
+     * @description Supported execution target backends.
      * @enum {string}
      */
     BackendType: 'vanilla_k8s' | 'openshell'
@@ -111,6 +112,7 @@ export interface components {
     }
     /**
      * TargetStatus
+     * @description Lifecycle states of an execution target.
      * @enum {string}
      */
     TargetStatus: 'registering' | 'validating' | 'bootstrapping' | 'active' | 'degraded' | 'failed'
@@ -187,6 +189,7 @@ export interface components {
     }
     /**
      * WorkItemStatus
+     * @description Lifecycle states of a dispatched work item.
      * @enum {string}
      */
     WorkItemStatus: 'pending' | 'claimed' | 'dispatched' | 'completed' | 'failed' | 'cancelled'

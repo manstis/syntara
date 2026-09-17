@@ -33,7 +33,7 @@ async def _dispatch_to_te(
     BOUNDARY CROSSING — see docs/execution-plane/integration.md.
     This function writes directly to the execution_plane DB schema instead of
     calling an HTTP API. When the EP worker becomes a standalone service, this
-    becomes POST /api/execution-plane/v1/submit with the same payload.
+    becomes POST /api/execution_plane/v1/submit with the same payload.
     """
     task_token_bytes: bytes = activity.info().task_token
     task_token_b64 = base64.b64encode(task_token_bytes).decode("ascii")

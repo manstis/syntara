@@ -5,7 +5,7 @@ info:
   description: Execution Plane operator endpoints — observe execution targets and work items.
   version: 0.1.0
 paths:
-  /api/execution-plane/v1/execution-targets:
+  /api/execution_plane/v1/execution_targets:
     get:
       tags:
         - Execution Plane
@@ -40,7 +40,7 @@ paths:
       x-app-permission:
         resource: execution_target
         action: read
-  /api/execution-plane/v1/work-items:
+  /api/execution_plane/v1/work_items:
     get:
       tags:
         - Execution Plane
