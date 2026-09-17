@@ -24,7 +24,7 @@ def _ep_fields() -> dict[str, type]:
     return typing.get_type_hints(EPScriptOutput)
 
 
-def _syntara_fields() -> dict[str, type]:
+def _syntara_fields() -> dict[str, type | None]:
     return {name: info.annotation for name, info in SyntaraScriptOutput.model_fields.items()}
 
 

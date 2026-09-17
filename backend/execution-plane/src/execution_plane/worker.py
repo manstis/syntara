@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from typing import Any
 
 import asyncpg
 import structlog
@@ -25,8 +26,8 @@ NOTIFY_CHANNEL = "execution_plane_work_items"
 async def _process_item(item: WorkItem, store: WorkStore) -> None:
     """Execute script, persist result, then send Temporal callback."""
     wi_id = str(item.id)
-    input_config: dict = item.payload.get("input_config", {})
-    output_config: dict | None = item.payload.get("output_config")
+    input_config: dict[str, Any] = item.payload.get("input_config", {})
+    output_config: dict[str, str] | None = item.payload.get("output_config")
 
     try:
         activity_result = await execute_script(input_config, output_config)

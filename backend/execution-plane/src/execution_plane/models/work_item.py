@@ -3,6 +3,7 @@
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import Column, Text
@@ -50,10 +51,10 @@ class WorkItem(SQLModel, table=True):
     execution_target_id: uuid.UUID | None = Field(default=None, foreign_key=f"{EP_SCHEMA}.execution_targets.id")
 
     # Activity parameters serialized by the Temporal activity before async handoff.
-    payload: dict = Field(default={}, sa_column=Column(JSONB, nullable=False, server_default="{}"))
+    payload: dict[str, Any] = Field(default={}, sa_column=Column(JSONB, nullable=False, server_default="{}"))
 
     # Terminal result persisted before signalling Temporal.
-    result: dict | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
+    result: dict[str, Any] | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
 
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     claimed_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))

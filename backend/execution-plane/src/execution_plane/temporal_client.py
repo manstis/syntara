@@ -39,13 +39,13 @@ class TemporalSettings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
-    temporal_address: str = Field("localhost:7233", validation_alias="APP_TEMPORAL_ADDRESS")
-    temporal_namespace: str = Field("default", validation_alias="APP_TEMPORAL_NAMESPACE")
+    temporal_address: str = Field(default="localhost:7233", validation_alias="APP_TEMPORAL_ADDRESS")
+    temporal_namespace: str = Field(default="default", validation_alias="APP_TEMPORAL_NAMESPACE")
 
     s2s_tls_enabled: bool = Field(default=False, validation_alias="APP_S2S_TLS_ENABLED")
-    s2s_tls_ca_cert_path: str | None = Field(None, validation_alias="APP_S2S_TLS_CA_CERT_PATH")
-    s2s_tls_cert_path: str | None = Field(None, validation_alias="APP_S2S_TLS_CERT_PATH")
-    s2s_tls_key_path: str | None = Field(None, validation_alias="APP_S2S_TLS_KEY_PATH")
+    s2s_tls_ca_cert_path: str | None = Field(default=None, validation_alias="APP_S2S_TLS_CA_CERT_PATH")
+    s2s_tls_cert_path: str | None = Field(default=None, validation_alias="APP_S2S_TLS_CERT_PATH")
+    s2s_tls_key_path: str | None = Field(default=None, validation_alias="APP_S2S_TLS_KEY_PATH")
 
     @computed_field  # type: ignore[prop-decorator]
     @property

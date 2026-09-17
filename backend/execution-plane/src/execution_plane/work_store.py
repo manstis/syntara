@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, text
 from sqlmodel import col
@@ -33,7 +33,7 @@ class WorkStore:
         self,
         activity_handle: str,
         work_correlation_id: uuid.UUID,
-        payload: dict,
+        payload: dict[str, Any],
     ) -> WorkItem:
         """Insert a new PENDING WorkItem and wake the EP worker via pg_notify."""
         item = WorkItem(
@@ -70,7 +70,7 @@ class WorkStore:
     async def set_result(
         self,
         item: WorkItem,
-        result: dict,
+        result: dict[str, Any],
         status: WorkItemStatus,
     ) -> None:
         """Persist the terminal result before signalling Temporal.

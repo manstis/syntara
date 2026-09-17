@@ -28,4 +28,5 @@ class EPSettings(BaseSettings):
 @lru_cache
 def get_ep_settings() -> EPSettings:
     """Load and cache execution-plane settings from the environment."""
-    return EPSettings()
+    # BaseSettings loads the required database_url from the environment.
+    return EPSettings()  # type: ignore[call-arg]

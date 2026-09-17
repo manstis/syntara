@@ -3,6 +3,7 @@
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import Column
 from sqlalchemy.dialects.postgresql import JSONB
@@ -42,6 +43,6 @@ class ExecutionTarget(SQLModel, table=True):
     endpoint: str
     status: TargetStatus = TargetStatus.REGISTERING
     enabled: bool = True
-    labels: dict = Field(default={}, sa_column=Column(JSONB, nullable=False, server_default="{}"))
+    labels: dict[str, Any] = Field(default={}, sa_column=Column(JSONB, nullable=False, server_default="{}"))
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     last_ran_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
