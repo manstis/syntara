@@ -29,14 +29,19 @@ class WorkItem(SQLModel, table=True):
     """A unit of work written by the Temporal Worker and consumed by the Task Executor."""
 
     __tablename__ = "work_items"
-    __table_args__ = {"schema": EP_SCHEMA}
+    __table_args__ = (
+        sa.Index("ix_work_items_work_correlation_id", "work_correlation_id"),
+        sa.Index("ix_work_items_status", "status"),
+        sa.Index("ix_work_items_pending", "created_at", postgresql_where=sa.text("status = 'pending'")),
+        {"schema": EP_SCHEMA},
+    )
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
 
     # Opaque correlation handle supplied by the caller (e.g. Temporal workflow_id).
     # Named generically so non-Temporal callers can use it without confusion with
     # Syntara's own execution_id concept.
-    work_correlation_id: uuid.UUID = Field(index=True)
+    work_correlation_id: uuid.UUID
 
     # Temporal async completion token. Held by the Task Executor until the terminal event
     # is received from the execution plane.
@@ -44,7 +49,7 @@ class WorkItem(SQLModel, table=True):
 
     status: WorkItemStatus = Field(
         default=WorkItemStatus.PENDING,
-        sa_column=Column(sa.String, nullable=False, index=True),
+        sa_column=Column(sa.String, nullable=False),
     )
 
     # Set when a worker claims this item.

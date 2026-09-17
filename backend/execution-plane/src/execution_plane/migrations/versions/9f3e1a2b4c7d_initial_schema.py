@@ -80,4 +80,5 @@ def downgrade() -> None:
     op.execute(f"DROP INDEX IF EXISTS {EP}.ix_work_items_pending")
     op.drop_table("work_items", schema=EP)
     op.drop_table("execution_targets", schema=EP)
-    op.execute(f"DROP SCHEMA IF EXISTS {EP}")
+    # The Alembic environment owns the schema and its version table. Keep both
+    # available so Alembic can record the downgrade and later upgrade again.
