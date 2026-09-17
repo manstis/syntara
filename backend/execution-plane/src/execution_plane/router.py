@@ -45,10 +45,12 @@ class WorkItemListResponse(BaseModel):
 
 
 def get_execution_target_registry(db: Annotated[AsyncSession, Depends(get_db)]) -> ExecutionTargetRegistry:
+    """Build the execution target registry for the current request."""
     return ExecutionTargetRegistry(db)
 
 
 def get_work_item_registry(db: Annotated[AsyncSession, Depends(get_db)]) -> WorkItemRegistry:
+    """Build the work item registry for the current request."""
     return WorkItemRegistry(db)
 
 
@@ -63,6 +65,7 @@ async def list_execution_targets(
     registry: Annotated[ExecutionTargetRegistry, Depends(get_execution_target_registry)],
     limit: int = Query(default=20, ge=1, le=100),
 ) -> ExecutionTargetListResponse:
+    """List registered execution targets."""
     items = await registry.list(limit)
     logger.info("Listed execution targets", count=len(items))
     return ExecutionTargetListResponse(resources=items)
@@ -79,6 +82,7 @@ async def list_work_items(
     registry: Annotated[WorkItemRegistry, Depends(get_work_item_registry)],
     limit: int = Query(default=20, ge=1, le=100),
 ) -> WorkItemListResponse:
+    """List dispatched work items."""
     items = await registry.list(limit)
     logger.info("Listed work items", count=len(items))
     return WorkItemListResponse(resources=items)

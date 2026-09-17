@@ -14,12 +14,13 @@ from logging.config import fileConfig
 from typing import TYPE_CHECKING
 
 from alembic import context
-from sqlalchemy import pool, text
+from sqlalchemy import Table, pool, text
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlmodel import SQLModel
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
+    from sqlalchemy.schema import SchemaItem
 
 # Import all execution_plane models so they are registered in SQLModel.metadata.
 import execution_plane.models  # noqa: F401
@@ -35,18 +36,26 @@ target_metadata = SQLModel.metadata
 
 database_url = config.get_main_option("sqlalchemy.url") or os.environ.get("DATABASE_URL")
 if not database_url:
-    raise RuntimeError("DATABASE_URL must be set or sqlalchemy.url provided in alembic.ini")
+    msg = "DATABASE_URL must be set or sqlalchemy.url provided in alembic.ini"
+    raise RuntimeError(msg)
 config.set_main_option("sqlalchemy.url", database_url)
 
 
-def include_object(obj, name, type_, reflected, compare_to):
+def include_object(
+    obj: SchemaItem,
+    _name: str | None,
+    type_: str,
+    _reflected: bool,  # noqa: FBT001 — Alembic passes this callback argument positionally.
+    _compare_to: SchemaItem | None,
+) -> bool:
     """Restrict autogenerate to the execution_plane schema only."""
     if type_ == "table":
-        return getattr(obj, "schema", None) == EP_SCHEMA
+        return isinstance(obj, Table) and obj.schema == EP_SCHEMA
     return True
 
 
 def run_migrations_offline() -> None:
+    """Generate migration SQL without opening a database connection."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -64,6 +73,7 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
+    """Run schema-scoped migrations on the supplied connection."""
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
@@ -78,6 +88,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
+    """Connect asynchronously and prepare the execution-plane schema."""
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -91,6 +102,7 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
+    """Run migrations against a live database."""
     asyncio.run(run_async_migrations())
 
 

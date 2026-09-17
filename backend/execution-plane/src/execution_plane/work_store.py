@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select, text
-from sqlmodel.ext.asyncio.session import AsyncSession
+from sqlmodel import col
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
 
@@ -19,7 +23,10 @@ _NOTIFY_CHANNEL = "execution_plane_work_items"
 
 
 class WorkStore:
+    """Persist work item lifecycle transitions and callback delivery state."""
+
     def __init__(self, session: AsyncSession) -> None:
+        """Use the caller-owned async database session."""
         self._session = session
 
     async def dispatch(
@@ -47,8 +54,8 @@ class WorkStore:
         """Claim the oldest PENDING item for this worker, or return None."""
         result = await self._session.execute(
             select(WorkItem)
-            .where(WorkItem.status == WorkItemStatus.PENDING)
-            .order_by(WorkItem.created_at)
+            .where(col(WorkItem.status) == WorkItemStatus.PENDING)
+            .order_by(col(WorkItem.created_at))
             .limit(1)
             .with_for_update(skip_locked=True)
         )
@@ -85,7 +92,7 @@ class WorkStore:
         """Return terminal items whose Temporal signal was never confirmed."""
         result = await self._session.execute(
             select(WorkItem)
-            .where(WorkItem.status.in_([WorkItemStatus.COMPLETED, WorkItemStatus.FAILED]))
-            .where(WorkItem.signaled_at.is_(None))
+            .where(col(WorkItem.status).in_([WorkItemStatus.COMPLETED, WorkItemStatus.FAILED]))
+            .where(col(WorkItem.signaled_at).is_(None))
         )
         return list(result.scalars().all())

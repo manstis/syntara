@@ -10,6 +10,7 @@ send_temporal_callback and has no other knowledge of Temporal.
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -24,16 +25,24 @@ from execution_plane.models.work_item import WorkItem, WorkItemStatus
 
 logger = structlog.stdlib.get_logger(__name__)
 
-_client: Client | None = None
+
+@dataclass
+class _ClientCache:
+    client: Client | None = None
+
+
+_client_cache = _ClientCache()
 
 
 class TemporalSettings(BaseSettings):
+    """Temporal connection and optional mutual TLS settings."""
+
     model_config = SettingsConfigDict(extra="ignore")
 
     temporal_address: str = Field("localhost:7233", validation_alias="APP_TEMPORAL_ADDRESS")
     temporal_namespace: str = Field("default", validation_alias="APP_TEMPORAL_NAMESPACE")
 
-    s2s_tls_enabled: bool = Field(False, validation_alias="APP_S2S_TLS_ENABLED")
+    s2s_tls_enabled: bool = Field(default=False, validation_alias="APP_S2S_TLS_ENABLED")
     s2s_tls_ca_cert_path: str | None = Field(None, validation_alias="APP_S2S_TLS_CA_CERT_PATH")
     s2s_tls_cert_path: str | None = Field(None, validation_alias="APP_S2S_TLS_CERT_PATH")
     s2s_tls_key_path: str | None = Field(None, validation_alias="APP_S2S_TLS_KEY_PATH")
@@ -41,6 +50,7 @@ class TemporalSettings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def tls_config(self) -> TLSConfig | None:
+        """Build mutual TLS configuration when all certificate paths are set."""
         if not self.s2s_tls_enabled:
             return None
         if not (self.s2s_tls_ca_cert_path and self.s2s_tls_cert_path and self.s2s_tls_key_path):
@@ -54,15 +64,15 @@ class TemporalSettings(BaseSettings):
 
 @lru_cache
 def get_temporal_settings() -> TemporalSettings:
+    """Load and cache Temporal settings from the environment."""
     return TemporalSettings()
 
 
 async def _get_client() -> Client:
-    global _client
-    if _client is None:
+    if _client_cache.client is None:
         settings = get_temporal_settings()
         tls = settings.tls_config
-        _client = await Client.connect(
+        _client_cache.client = await Client.connect(
             settings.temporal_address,
             namespace=settings.temporal_namespace,
             tls=tls,
@@ -73,7 +83,7 @@ async def _get_client() -> Client:
             namespace=settings.temporal_namespace,
             tls_enabled=tls is not None,
         )
-    return _client
+    return _client_cache.client
 
 
 async def send_temporal_callback(item: WorkItem) -> bool:

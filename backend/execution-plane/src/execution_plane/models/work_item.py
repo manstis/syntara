@@ -1,4 +1,4 @@
-from __future__ import annotations
+"""Work item persistence model and lifecycle states."""
 
 import uuid
 from datetime import datetime
@@ -14,6 +14,8 @@ from execution_plane.models.execution_target import EP_SCHEMA
 
 
 class WorkItemStatus(StrEnum):
+    """Lifecycle states of a dispatched work item."""
+
     PENDING = "pending"
     CLAIMED = "claimed"
     DISPATCHED = "dispatched"

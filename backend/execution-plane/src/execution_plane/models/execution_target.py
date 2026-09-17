@@ -1,4 +1,4 @@
-from __future__ import annotations
+"""Execution target persistence models and lifecycle states."""
 
 import uuid
 from datetime import datetime
@@ -13,11 +13,15 @@ EP_SCHEMA = "execution_plane"
 
 
 class BackendType(StrEnum):
+    """Supported execution target backends."""
+
     VANILLA_K8S = "vanilla_k8s"
     OPENSHELL = "openshell"
 
 
 class TargetStatus(StrEnum):
+    """Lifecycle states of an execution target."""
+
     REGISTERING = "registering"
     VALIDATING = "validating"
     BOOTSTRAPPING = "bootstrapping"

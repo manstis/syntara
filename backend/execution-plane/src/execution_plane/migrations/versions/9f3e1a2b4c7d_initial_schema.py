@@ -21,6 +21,7 @@ EP = "execution_plane"
 
 
 def upgrade() -> None:
+    """Create execution target and work item tables."""
     op.execute(f"CREATE SCHEMA IF NOT EXISTS {EP}")
 
     op.create_table(
@@ -75,6 +76,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    """Remove execution target and work item tables."""
     op.execute(f"DROP INDEX IF EXISTS {EP}.ix_work_items_pending")
     op.drop_table("work_items", schema=EP)
     op.drop_table("execution_targets", schema=EP)

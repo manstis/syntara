@@ -9,6 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class EPSettings(BaseSettings):
+    """Database settings for the execution-plane worker."""
+
     model_config = SettingsConfigDict(extra="ignore")
 
     # Database — accepts either APP_DATABASE_URL or DATABASE_URL
@@ -25,4 +27,5 @@ class EPSettings(BaseSettings):
 
 @lru_cache
 def get_ep_settings() -> EPSettings:
+    """Load and cache execution-plane settings from the environment."""
     return EPSettings()

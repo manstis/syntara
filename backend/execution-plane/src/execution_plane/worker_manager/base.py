@@ -7,9 +7,10 @@ pool's backend_type.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from execution_plane.models.work_item import WorkItem
+if TYPE_CHECKING:
+    from execution_plane.models.work_item import WorkItem
 
 
 class WorkerManager(Protocol):
