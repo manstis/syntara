@@ -83,6 +83,7 @@ components:
         - vanilla_k8s
         - openshell
       title: BackendType
+      description: Supported execution target backends.
     ExecutionTarget:
       properties:
         id:
@@ -173,6 +174,7 @@ components:
         - degraded
         - failed
       title: TargetStatus
+      description: Lifecycle states of an execution target.
     ValidationError:
       properties:
         loc:
@@ -298,6 +300,7 @@ components:
         - failed
         - cancelled
       title: WorkItemStatus
+      description: Lifecycle states of a dispatched work item.
   securitySchemes:
     bearerAuth:
       type: http
