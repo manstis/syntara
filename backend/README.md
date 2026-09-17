@@ -144,6 +144,18 @@ make lint
 
 > **Note:** The API server requires Redis (`make cache-run`) for authentication and streaming. Authorization is evaluated in-process via regopy from `src/syntara/authz/rego/authz.rego`.
 
+### Execution-plane CI coverage
+
+Unit and combined test targets include `execution-plane/tests/`. CLI,
+integration, and E2E targets retain their own suites. Coverage reports and
+SonarCloud include `execution-plane/src/`, excluding generated migrations
+from coverage in the same way as the main backend.
+
+`make format`, `make lint`, and `make typecheck` include execution-plane source
+and tests. `make typecheck-pyrefly` checks its source alongside the main backend.
+The pre-commit workflow uses these shared targets. Static checks also inspect
+execution-plane API paths, dead code, imports, test structure, and migrations.
+
 ### Database Setup
 
 The project includes a PostgreSQL 17 database for local development.
