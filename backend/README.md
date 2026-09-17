@@ -554,6 +554,13 @@ If `APP_BASE_URL` is not set, the target automatically starts the database and d
 
 > **Note:** The E2E tests use an auto-generated Python API client. If you change the OpenAPI schema, regenerate the client with `make generate-api-client` before running E2E tests.
 
+Workflow integration tests run a real execution-plane worker alongside the Temporal
+test server, using the same PostgreSQL testcontainer as the test. Database setup
+applies both the backend and execution-plane migrations. Processing starts after
+each database restore and stops before teardown; completion callbacks use the test
+Temporal client. Automatic time skipping is disabled while this fixture is active
+so external script execution is not overtaken by activity timeouts.
+
 ### Syntara Test SDK
 
 Reusable pytest fixtures for integration and E2E tests live in `test-sdk/`. The package is a pytest plugin (`pytest11` entry point), so fixtures are available automatically once installed — no `conftest.py` imports needed.

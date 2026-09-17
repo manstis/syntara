@@ -5,8 +5,9 @@ converge strategies, expression resolution, continue-on-failure) work correctly
 when dispatched through a real Temporal test server.
 
 These complement the 210+ unit tests (which mock Temporal) and the E2E tests
-(which require the full API stack). This tier uses WorkflowEnvironment with
-time-skipping for fast, deterministic, infrastructure-free testing.
+(which require the full API stack). This tier uses a Temporal test server and PostgreSQL testcontainer, with the
+execution-plane worker running real scripts. Automatic time skipping is disabled
+while external execution-plane work is in progress.
 
 Story: AAP-74236 — E2E Testing for V2 Schema
 """

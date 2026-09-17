@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import asyncpg
@@ -23,7 +24,10 @@ POLL_INTERVAL_SECONDS = 5
 NOTIFY_CHANNEL = "execution_plane_work_items"
 
 
-async def _process_item(item: WorkItem, store: WorkStore) -> None:
+CompletionCallback = Callable[[WorkItem], Awaitable[bool]]
+
+
+async def _process_item(item: WorkItem, store: WorkStore, completion_callback: CompletionCallback) -> None:
     """Execute script, persist result, then send Temporal callback."""
     wi_id = str(item.id)
     input_config: dict[str, Any] = item.payload.get("input_config", {})
@@ -40,11 +44,13 @@ async def _process_item(item: WorkItem, store: WorkStore) -> None:
         await store.set_result(item, {"error": str(e), "error_type": type(e).__name__}, WorkItemStatus.FAILED)
         logger.exception("Unexpected error processing work item", work_item_id=wi_id)
 
-    if await send_temporal_callback(item):
+    if await completion_callback(item):
         await store.mark_signal_delivered(item)
 
 
-async def _recover_undelivered(session_factory: async_sessionmaker[AsyncSession]) -> None:
+async def _recover_undelivered(
+    session_factory: async_sessionmaker[AsyncSession], completion_callback: CompletionCallback
+) -> None:
     """Retry callbacks for items that completed but were never confirmed delivered.
 
     Runs once at startup. Bounded query: only terminal items with NULL signaled_at.
@@ -57,7 +63,7 @@ async def _recover_undelivered(session_factory: async_sessionmaker[AsyncSession]
             return
         logger.info("Recovering undelivered Temporal callbacks", count=len(items))
         for item in items:
-            if await send_temporal_callback(item):
+            if await completion_callback(item):
                 await store.mark_signal_delivered(item)
 
 
@@ -77,6 +83,8 @@ async def _listen_loop(database_url: str, wakeup_event: asyncio.Event) -> None:
             try:
                 conn.add_termination_listener(lambda _, ev=disconnected: ev.set())
                 await conn.add_listener(NOTIFY_CHANNEL, lambda *_: wakeup_event.set())
+                # Recheck work queued before LISTEN became active (also on reconnect).
+                wakeup_event.set()
                 logger.info("Listening for notifications", channel=NOTIFY_CHANNEL)
                 await disconnected.wait()
             finally:
@@ -90,6 +98,7 @@ async def _listen_loop(database_url: str, wakeup_event: asyncio.Event) -> None:
 async def _poll_loop(
     session_factory: async_sessionmaker[AsyncSession],
     wakeup_event: asyncio.Event,
+    completion_callback: CompletionCallback,
 ) -> None:
     """Claim one work item at a time; sleep between polls when queue is empty."""
     logger.info("Execution Plane worker started, polling for work items")
@@ -102,7 +111,7 @@ async def _poll_loop(
                 item = await store.claim_one()
                 if item:
                     logger.info("Claimed work item", work_item_id=str(item.id))
-                    await _process_item(item, store)
+                    await _process_item(item, store, completion_callback)
         except Exception:
             logger.exception("Error in polling loop, will retry")
 
@@ -112,19 +121,29 @@ async def _poll_loop(
                 await asyncio.wait_for(wakeup_event.wait(), timeout=POLL_INTERVAL_SECONDS)
 
 
+async def run_worker(
+    session_factory: async_sessionmaker[AsyncSession],
+    database_url: str,
+    completion_callback: CompletionCallback = send_temporal_callback,
+) -> None:
+    """Run processing until cancelled, using the supplied database and callback.
+
+    The caller owns the session factory's engine. Cancellation closes both the
+    notification listener and the polling task before returning to the caller.
+    """
+    await _recover_undelivered(session_factory, completion_callback)
+    wakeup_event = asyncio.Event()
+    async with asyncio.TaskGroup() as tg:
+        tg.create_task(_listen_loop(database_url, wakeup_event), name="ep-listener")
+        tg.create_task(_poll_loop(session_factory, wakeup_event, completion_callback), name="ep-poll")
+
+
 async def _run() -> None:
     settings = get_ep_settings()
-
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-    await _recover_undelivered(session_factory)
-
-    wakeup_event = asyncio.Event()
     try:
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(_listen_loop(settings.database_url_asyncpg, wakeup_event), name="ep-listener")
-            tg.create_task(_poll_loop(session_factory, wakeup_event), name="ep-poll")
+        await run_worker(session_factory, settings.database_url_asyncpg)
     finally:
         await engine.dispose()
 

@@ -48,15 +48,16 @@ async def _dispatch_to_te(
     except ValueError:
         work_correlation_id = uuid.uuid4()
 
-    async with session_factory() as session:
-        store = WorkStore(session)
-        work_item = await store.dispatch(
-            activity_handle=task_token_b64,
-            work_correlation_id=work_correlation_id,
-            payload={"input_config": input_config, "output_config": output_config},
-        )
-
-    await engine.dispose()
+    try:
+        async with session_factory() as session:
+            store = WorkStore(session)
+            work_item = await store.dispatch(
+                activity_handle=task_token_b64,
+                work_correlation_id=work_correlation_id,
+                payload={"input_config": input_config, "output_config": output_config},
+            )
+    finally:
+        await engine.dispose()
     activity.logger.info("Dispatched work item to TE work_item_id=%s", work_item.id)
 
 

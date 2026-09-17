@@ -86,14 +86,15 @@ async def _get_client() -> Client:
     return _client_cache.client
 
 
-async def send_temporal_callback(item: WorkItem) -> bool:
+async def send_temporal_callback(item: WorkItem, *, client: Client | None = None) -> bool:
     """Resume the suspended Syntara activity with the script result.
 
     Returns True if the callback was delivered (or the token was already consumed),
     False if a retryable RPC error occurred — caller should not mark_signal_delivered.
     """
     wi_id = str(item.id)
-    client = await _get_client()
+    if client is None:
+        client = await _get_client()
     task_token = base64.b64decode(item.activity_handle)
     handle = client.get_async_activity_handle(task_token=task_token)
 
