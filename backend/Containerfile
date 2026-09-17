@@ -124,6 +124,31 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /opt/app-root/src
 
 
+# ── execution-plane: EP worker only ─────────────────────────────────────────
+FROM runtime-base AS execution-plane
+
+ARG CONTAINER_IMAGE_VERSION=""
+
+COPY --from=ep-builder /opt/app-root/ /opt/app-root/
+COPY --from=ep-builder /usr/local/bin/uv /usr/local/bin/uv
+
+ENV PATH="/opt/app-root/src/.venv/bin:/opt/app-root/bin:$PATH" \
+    APP_CONTAINER_IMAGE_VERSION="${CONTAINER_IMAGE_VERSION}"
+
+RUN chown -R 1001:0 /opt/app-root && chmod -R g=u /opt/app-root
+
+USER 1001
+
+CMD ["execution-plane-worker"]
+
+LABEL com.redhat.component="ansible-automation-orchestrator-ep-container" \
+      name="ansible-automation-platform/automation-orchestrator-execution-plane-rhel9" \
+      summary="Ansible Automation Orchestrator Execution Plane Worker" \
+      io.k8s.display-name="automation-orchestrator-execution-plane-rhel9" \
+      io.k8s.description="Ansible Automation Orchestrator Execution Plane Worker" \
+      vendor="Red Hat, Inc."
+
+
 # ── syntara: API + Temporal workers ─────────────────────────────────────────
 FROM runtime-base AS syntara
 
@@ -178,29 +203,4 @@ LABEL com.redhat.component="ansible-automation-orchestrator-backend-container" \
       io.k8s.description="${DESCRIPTION}" \
       maintainer="Ansible Automation Platform Productization Team" \
       description="${DESCRIPTION}" \
-      vendor="Red Hat, Inc."
-
-
-# ── execution-plane: EP worker only ─────────────────────────────────────────
-FROM runtime-base AS execution-plane
-
-ARG CONTAINER_IMAGE_VERSION=""
-
-COPY --from=ep-builder /opt/app-root/ /opt/app-root/
-COPY --from=ep-builder /usr/local/bin/uv /usr/local/bin/uv
-
-ENV PATH="/opt/app-root/src/.venv/bin:/opt/app-root/bin:$PATH" \
-    APP_CONTAINER_IMAGE_VERSION="${CONTAINER_IMAGE_VERSION}"
-
-RUN chown -R 1001:0 /opt/app-root && chmod -R g=u /opt/app-root
-
-USER 1001
-
-CMD ["execution-plane-worker"]
-
-LABEL com.redhat.component="ansible-automation-orchestrator-ep-container" \
-      name="ansible-automation-platform/automation-orchestrator-execution-plane-rhel9" \
-      summary="Ansible Automation Orchestrator Execution Plane Worker" \
-      io.k8s.display-name="automation-orchestrator-execution-plane-rhel9" \
-      io.k8s.description="Ansible Automation Orchestrator Execution Plane Worker" \
       vendor="Red Hat, Inc."
