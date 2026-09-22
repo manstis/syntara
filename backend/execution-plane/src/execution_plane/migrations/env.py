@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from sqlalchemy.schema import SchemaItem
 
 # Import all execution_plane models so they are registered in SQLModel.metadata.
+import execution_plane.models.cluster
 import execution_plane.models.execution_target
 import execution_plane.models.work_item  # noqa: F401
 

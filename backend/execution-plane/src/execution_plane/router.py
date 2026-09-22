@@ -7,9 +7,13 @@ from fastapi import Depends, Query
 from pydantic import BaseModel, ConfigDict
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from execution_plane.cluster.cluster_registry import ClusterRegistry, NoopDiscoveryMechanism
+from execution_plane.cluster.cluster_store import ClusterStore
+from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
+from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.models.execution_target import ExecutionTarget
 from execution_plane.models.work_item import WorkItem
-from execution_plane.services import ExecutionTargetRegistry, WorkItemRegistry
+from execution_plane.services import WorkItemRegistry
 from syntara.authz.dependencies import PermissionChecker
 from syntara.core.database.session import get_db
 from syntara.core.syntara_router import SyntaraRouter
@@ -44,9 +48,23 @@ class WorkItemListResponse(BaseModel):
     total: int | None = None
 
 
-def get_execution_target_registry(db: Annotated[AsyncSession, Depends(get_db)]) -> ExecutionTargetRegistry:
-    """Build the execution target registry for the current request."""
-    return ExecutionTargetRegistry(db)
+def get_execution_target_registry(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ExecutionTargetRegistry:
+    """Build a request-scoped target registry using Syntara's DB session."""
+    return ExecutionTargetRegistry(ExecutionTargetStore.from_session(db))
+
+
+def get_cluster_registry(
+    target_registry: Annotated[ExecutionTargetRegistry, Depends(get_execution_target_registry)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ClusterRegistry:
+    """Build a request-scoped Cluster registry using the target registry."""
+    return ClusterRegistry(
+        ClusterStore.from_session(db),
+        target_registry,
+        NoopDiscoveryMechanism(),
+    )
 
 
 def get_work_item_registry(db: Annotated[AsyncSession, Depends(get_db)]) -> WorkItemRegistry:
@@ -66,7 +84,7 @@ async def list_execution_targets(
     limit: int = Query(default=20, ge=1, le=100),
 ) -> ExecutionTargetListResponse:
     """List registered execution targets."""
-    items = await registry.list(limit)
+    items = await registry.list(limit=limit)
     logger.info("Listed execution targets", count=len(items))
     return ExecutionTargetListResponse(resources=items)
 

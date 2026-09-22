@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import DateTime
 from sqlmodel import Field, SQLModel
 
-from execution_plane.models.execution_target import EP_SCHEMA
+from execution_plane.models.constants import EP_SCHEMA
 
 
 class WorkItemStatus(StrEnum):

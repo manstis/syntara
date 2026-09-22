@@ -64,6 +64,11 @@ export interface components {
        * Format: uuid
        */
       id?: string
+      /**
+       * Cluster Id
+       * Format: uuid
+       */
+      cluster_id: string
       /** Name */
       name: string
       backend_type: components['schemas']['BackendType']
@@ -77,6 +82,13 @@ export interface components {
        */
       enabled?: boolean
       /**
+       * Is Default
+       * @default false
+       */
+      is_default?: boolean
+      /** Status Message */
+      status_message?: string | null
+      /**
        * Labels
        * @default {}
        */
@@ -84,10 +96,25 @@ export interface components {
         [key: string]: unknown
       }
       /**
+       * Created By
+       * Format: uuid
+       */
+      created_by: string
+      /**
        * Created At
        * Format: date-time
        */
       created_at: string
+      /**
+       * Updated By
+       * Format: uuid
+       */
+      updated_by: string
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string
       /** Last Ran At */
       last_ran_at?: string | null
     }
@@ -115,7 +142,7 @@ export interface components {
      * @description Lifecycle states of an execution target.
      * @enum {string}
      */
-    TargetStatus: 'registering' | 'validating' | 'bootstrapping' | 'active' | 'degraded' | 'failed'
+    TargetStatus: 'registering' | 'validating' | 'bootstrapping' | 'active' | 'degraded' | 'draining' | 'failed'
     /** ValidationError */
     ValidationError: {
       /** Location */

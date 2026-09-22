@@ -3,15 +3,18 @@
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Column, Index, UniqueConstraint
+from sqlalchemy import Column, Index, String, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import DateTime
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, Relationship, SQLModel
 
-EP_SCHEMA = "execution_plane"
+if TYPE_CHECKING:
+    from execution_plane.models.cluster import Cluster
+
+from execution_plane.models.constants import EP_SCHEMA
 
 
 class BackendType(StrEnum):
@@ -29,6 +32,7 @@ class TargetStatus(StrEnum):
     BOOTSTRAPPING = "bootstrapping"
     ACTIVE = "active"
     DEGRADED = "degraded"
+    DRAINING = "draining"
     FAILED = "failed"
 
 
@@ -43,6 +47,7 @@ class ExecutionTarget(SQLModel, table=True):
     )
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    cluster_id: uuid.UUID = Field(foreign_key=f"{EP_SCHEMA}.clusters.id", nullable=False)
     name: str
     # The migration stores enum values in VARCHAR columns, not native PG enums.
     backend_type: BackendType = Field(
@@ -64,6 +69,14 @@ class ExecutionTarget(SQLModel, table=True):
         ),
     )
     enabled: bool = True
+    is_default: bool = Field(default=False, nullable=False)
+    api_key: str = Field(sa_column=Column(String, nullable=False), repr=False, exclude=True)
+    status_message: str | None = Field(default=None, nullable=True)
     labels: dict[str, Any] = Field(default={}, sa_column=Column(JSONB, nullable=False, server_default="{}"))
+    created_by: uuid.UUID = Field(nullable=False)
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    updated_by: uuid.UUID = Field(nullable=False)
+    updated_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     last_ran_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+
+    cluster: "Cluster" = Relationship(back_populates="execution_targets")

@@ -48,6 +48,14 @@ class _SessionFactory:
         return self.session
 
 
+class _ScalarResult:
+    def __init__(self, value: uuid.UUID | None) -> None:
+        self.value = value
+
+    def scalar_one_or_none(self) -> uuid.UUID | None:
+        return self.value
+
+
 def _store() -> WorkStore:
     return WorkStore("postgresql+asyncpg://localhost/syntara")
 
@@ -91,9 +99,25 @@ async def test_set_result_reloads_item_by_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_is_target_drained_checks_claimed_and_dispatched_work() -> None:
+    """A target is drained only when no active WorkItems reference it."""
+    store = _store()
+    session = _Session()
+    store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
+    target_id = uuid.uuid4()
+
+    session.execute.return_value = _ScalarResult(None)
+    assert await store.is_target_drained(target_id) is True
+    session.execute.return_value = _ScalarResult(uuid.uuid4())
+    assert await store.is_target_drained(target_id) is False
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_accepts_engine_options() -> None:
     """Store callers can select a pool appropriate for their lifecycle."""
     store = WorkStore("postgresql+asyncpg://localhost/syntara", poolclass=NullPool)
 
+    assert store._engine is not None
     assert isinstance(store._engine.pool, NullPool)
     await store.close()

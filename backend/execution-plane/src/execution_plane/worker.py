@@ -136,18 +136,18 @@ async def run_worker(
 ) -> None:
     """Run processing until cancelled, using the supplied database and callback.
 
-    Cancellation closes both the notification listener and the polling task
-    before returning to the caller, then disposes the store's engine.
+    Cancellation closes both the notification listener and the polling task,
+    then disposes the WorkStore.
     """
-    async with WorkStore(database_url) as store:
-        await _recover_undelivered(store, completion_callback)
+    async with WorkStore.from_database_url(database_url) as work_store:
+        await _recover_undelivered(work_store, completion_callback)
         wakeup_event = asyncio.Event()
         async with asyncio.TaskGroup() as tg:
             tg.create_task(
                 _listen_loop(to_asyncpg_url(database_url), wakeup_event),
                 name="ep-listener",
             )
-            tg.create_task(_poll_loop(store, wakeup_event, completion_callback), name="ep-poll")
+            tg.create_task(_poll_loop(work_store, wakeup_event, completion_callback), name="ep-poll")
 
 
 async def _run() -> None:
