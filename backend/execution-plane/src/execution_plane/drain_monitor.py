@@ -54,7 +54,7 @@ class DrainMonitor:
             self._started = False
             raise
 
-    async def _schedule_target(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> None:
+    def _schedule_target(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> None:
         """Schedule an individual target drain if one is not already running."""
         task = self._tasks.get(target_id)
         if task is not None and not task.done():
@@ -114,7 +114,7 @@ class DrainMonitor:
         targets = await self._target_store.list(status=TargetStatus.DRAINING)
         for target in targets:
             if target.cluster_id not in cluster_ids:
-                await self._schedule_target(target.id, target.updated_by)
+                self._schedule_target(target.id, target.updated_by)
 
     async def _drain_target(self, target_id: uuid.UUID, updated_by: uuid.UUID) -> None:
         try:

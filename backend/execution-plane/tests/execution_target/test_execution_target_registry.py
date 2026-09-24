@@ -10,6 +10,7 @@ import pytest
 from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
 from execution_plane.execution_target.execution_target_store import (
     DefaultExecutionTargetError,
+    ExecutionTargetNotFoundError,
     ExecutionTargetStore,
     TargetNotDrainedError,
 )
@@ -101,7 +102,7 @@ class _Store:
         self.target = target
         self.delete_requested = False
 
-    async def create(self, **_: object) -> ExecutionTarget:
+    async def create(self, *_: object, **__: object) -> ExecutionTarget:
         return self.target
 
     async def get(self, _target_id: uuid.UUID) -> ExecutionTarget | None:
@@ -116,6 +117,12 @@ class _Store:
 
     async def finalize_delete(self, _target_id: uuid.UUID) -> None:
         self.delete_requested = True
+
+    async def activate(self, _target_id: uuid.UUID, _updated_by: uuid.UUID) -> ExecutionTarget:
+        return self.target
+
+    async def update(self, _target_id: uuid.UUID, **_: object) -> ExecutionTarget:
+        return self.target
 
 
 @pytest.mark.asyncio
@@ -307,6 +314,40 @@ async def test_registry_delegates_eligible_listing_without_a_database_session() 
     registry = ExecutionTargetRegistry(_Store(target))  # type: ignore[arg-type]
 
     assert await registry.list(cluster_id=target.cluster_id, eligible_only=True) == [target]
+
+
+@pytest.mark.asyncio
+async def test_registry_delegates_create_get_activate_and_update() -> None:
+    target = _target()
+    registry = ExecutionTargetRegistry(_Store(target))  # type: ignore[arg-type]
+
+    assert (
+        await registry.create(
+            target.cluster_id,
+            target.name,
+            target.backend_type,
+            target.endpoint,
+            target.api_key,
+            target.is_default,
+            target.created_by,
+        )
+        is target
+    )
+    assert await registry.get(target.id) is target
+    assert await registry.activate(target.id, uuid.uuid4()) is target
+    assert await registry.update(target.id, updated_by=uuid.uuid4(), name="renamed") is target
+
+
+@pytest.mark.asyncio
+async def test_registry_rejects_deletion_of_an_unknown_target() -> None:
+    class EmptyStore(_Store):
+        async def get(self, _target_id: uuid.UUID) -> ExecutionTarget | None:
+            return None
+
+    registry = ExecutionTargetRegistry(EmptyStore(_target()))  # type: ignore[arg-type]
+
+    with pytest.raises(ExecutionTargetNotFoundError):
+        await registry.request_delete(uuid.uuid4(), uuid.uuid4())
 
 
 def test_store_accepts_a_pool_for_its_owned_engine() -> None:

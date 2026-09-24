@@ -392,3 +392,73 @@ async def test_registry_persists_cluster_drain_request() -> None:
     result = await registry.request_delete(cluster.id, actor_id)
 
     assert result.status is ClusterStatus.DRAINING
+
+
+@pytest.mark.asyncio
+async def test_registry_marks_cluster_error_when_discovery_returns_no_single_default() -> None:
+    from execution_plane.cluster.cluster_registry import (
+        ClusterRegistry,
+        DiscoveredExecutionTarget,
+        DiscoveryResult,
+    )
+
+    cluster = _cluster()
+    store = _ClusterStore(cluster)
+    discovery = _Discovery(
+        DiscoveryResult.discovered([DiscoveredExecutionTarget("one", BackendType.VANILLA_K8S, "https://one", "key")])
+    )
+
+    result = await ClusterRegistry(store, _TargetRegistry(), discovery).register(  # type: ignore[arg-type]
+        "cluster-a", "https://cluster.example", "secret", uuid.uuid4()
+    )
+
+    assert result.status is ClusterStatus.ERROR
+    assert result.status_message == "Discovery did not provide exactly one default target"
+
+
+@pytest.mark.asyncio
+async def test_registry_keeps_cluster_active_when_a_non_default_target_fails() -> None:
+    from execution_plane.cluster.cluster_registry import (
+        ClusterRegistry,
+        DiscoveredExecutionTarget,
+        DiscoveryResult,
+    )
+
+    cluster = _cluster()
+    store = _ClusterStore(cluster)
+    targets = _TargetRegistry(fail_named="extra")
+    discovery = _Discovery(
+        DiscoveryResult.discovered(
+            [
+                DiscoveredExecutionTarget("primary", BackendType.VANILLA_K8S, "https://one", "key", is_default=True),
+                DiscoveredExecutionTarget("extra", BackendType.OPENSHELL, "https://two", "key"),
+            ]
+        )
+    )
+
+    result = await ClusterRegistry(store, targets, discovery).register(  # type: ignore[arg-type]
+        "cluster-a", "https://cluster.example", "secret", uuid.uuid4()
+    )
+
+    assert result.status is ClusterStatus.ACTIVE
+    assert result.status_message == "Target registration failures: extra"
+
+
+@pytest.mark.asyncio
+async def test_registry_delegates_get_and_list_to_the_cluster_store() -> None:
+    from execution_plane.cluster.cluster_registry import ClusterRegistry
+
+    cluster = _cluster()
+    registry = ClusterRegistry(_ClusterStore(cluster), _TargetRegistry(), _Discovery(object()))  # type: ignore[arg-type]
+
+    assert await registry.get(cluster.id) is cluster
+    assert await registry.list(status=ClusterStatus.ACTIVE, enabled=True) == [cluster]
+
+
+def test_noop_discovery_returns_a_failed_result() -> None:
+    from execution_plane.cluster.cluster_registry import ClusterRegistration, NoopDiscoveryMechanism
+
+    result = NoopDiscoveryMechanism().discover(ClusterRegistration("name", "endpoint", "secret", {}))
+
+    assert result.state.value == "failed"
+    assert result.status_message == "No discovery mechanism is configured"
