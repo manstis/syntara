@@ -24,7 +24,10 @@ def test_cluster_table_exposes_required_lifecycle_and_audit_contract() -> None:
         ClusterStatus.DRAINING,
         ClusterStatus.ERROR,
     }
-    assert table.c.endpoint.unique is True
+    assert any(
+        constraint.name == "clusters_endpoint_key" and {column.name for column in constraint.columns} == {"endpoint"}
+        for constraint in table.constraints
+    )
     assert table.c.api_key.nullable is False
     assert table.c.labels.type.__class__.__name__ == "JSONB"
     assert isinstance(table.c.api_key.type, String)
@@ -45,6 +48,14 @@ def test_execution_target_belongs_to_cluster_with_default_and_draining_state() -
     assert table.name == "execution_targets"
     assert table.schema == EP_SCHEMA
     assert table.c.cluster_id.nullable is False
+    assert table.constraints
+    assert any(
+        constraint.name == "execution_targets_cluster_name_key"
+        and {column.name for column in constraint.columns} == {"cluster_id", "name"}
+        for constraint in table.constraints
+    )
+    default_index = next(index for index in table.indexes if index.name == "uq_execution_targets_default_cluster")
+    assert default_index.unique is True
     assert next(iter(table.c.cluster_id.foreign_keys)).target_fullname == "execution_plane.clusters.id"
     assert table.c.is_default.default.arg is False
     assert TargetStatus.DRAINING.value == "draining"

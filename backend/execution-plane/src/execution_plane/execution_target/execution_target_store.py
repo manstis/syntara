@@ -5,11 +5,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import col
 
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
+from execution_plane.models.work_item import WorkItem
 from execution_plane.store_base import StoreBase
 
 if TYPE_CHECKING:
@@ -33,8 +35,25 @@ class TargetNotDrainedError(ValueError):
     """Raised when physical deletion is attempted before draining completes."""
 
 
+class TargetNotActivatableError(ValueError):
+    """Raised when a target is no longer in its registration state."""
+
+
+class ClusterNotAvailableError(ValueError):
+    """Raised when a target is created for a Cluster that cannot accept targets."""
+
+
 class ExecutionTargetStore(StoreBase):
     """Persist execution targets and own their database resources."""
+
+    @staticmethod
+    def _can_add_execution_target(cluster: Cluster | None) -> bool:
+        """Return whether a Cluster can accept another target."""
+        if cluster is None:
+            return False
+        if not cluster.enabled:
+            return False
+        return cluster.status in [ClusterStatus.ACTIVE, ClusterStatus.REGISTERING]
 
     async def create(
         self,
@@ -62,8 +81,12 @@ class ExecutionTargetStore(StoreBase):
             updated_by=created_by,
             updated_at=now,
         )
+
         async with self._session_context() as session:
             try:
+                cluster = await session.get(Cluster, cluster_id, with_for_update=True)
+                if not self._can_add_execution_target(cluster):
+                    raise ClusterNotAvailableError(cluster_id)  # noqa: TRY301
                 if is_default:
                     result = await session.execute(
                         select(ExecutionTarget)
@@ -75,6 +98,11 @@ class ExecutionTargetStore(StoreBase):
                 session.add(target)
                 await session.commit()
                 return self._without_secret(target)
+            except IntegrityError as exc:
+                await session.rollback()
+                if is_default:
+                    raise DefaultExecutionTargetError from exc
+                raise
             except Exception:
                 await session.rollback()
                 raise
@@ -136,9 +164,11 @@ class ExecutionTargetStore(StoreBase):
         """Mark a successfully registered target eligible for work."""
         async with self._session_context() as session:
             try:
-                target = await session.get(ExecutionTarget, target_id)
+                target = await session.get(ExecutionTarget, target_id, with_for_update=True)
                 if target is None:
                     raise ExecutionTargetNotFoundError(target_id)  # noqa: TRY301
+                if target.status is not TargetStatus.REGISTERING:
+                    raise TargetNotActivatableError(target_id)  # noqa: TRY301
                 target.enabled = True
                 target.status = TargetStatus.ACTIVE
                 target.updated_by = updated_by
@@ -221,6 +251,11 @@ class ExecutionTargetStore(StoreBase):
                     raise DefaultExecutionTargetError  # noqa: TRY301
                 if target.enabled or target.status != TargetStatus.DRAINING:
                     raise TargetNotDrainedError(target_id)  # noqa: TRY301
+                await session.execute(
+                    update(WorkItem)
+                    .where(col(WorkItem.execution_target_id) == target_id)
+                    .values(execution_target_id=None)
+                )
                 await session.delete(target)
                 await session.commit()
             except Exception:

@@ -84,7 +84,7 @@ class _Session:
     def add(self, cluster: Cluster) -> None:
         self.added = cluster
 
-    async def get(self, _model: object, _cluster_id: uuid.UUID) -> Cluster | None:
+    async def get(self, _model: object, _cluster_id: uuid.UUID, **_: object) -> Cluster | None:
         return self.cluster
 
     async def execute(self, _statement: object) -> _Result:

@@ -8,11 +8,15 @@ from typing import Self
 
 import pytest
 from execution_plane.execution_target.execution_target_store import (
+    ClusterNotAvailableError,
     DefaultExecutionTargetError,
     ExecutionTargetNotFoundError,
     ExecutionTargetStore,
+    TargetNotActivatableError,
 )
+from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
+from sqlalchemy.exc import IntegrityError
 
 _DATABASE_UNAVAILABLE = "database unavailable"
 
@@ -36,6 +40,22 @@ def _target(*, is_default: bool = False, status: TargetStatus = TargetStatus.ACT
     )
 
 
+def _cluster(*, status: ClusterStatus = ClusterStatus.REGISTERING) -> Cluster:
+    now = datetime.now(UTC)
+    return Cluster(
+        id=uuid.uuid4(),
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        api_key="secret",
+        status=status,
+        enabled=status in (ClusterStatus.ACTIVE, ClusterStatus.REGISTERING),
+        created_by=uuid.uuid4(),
+        created_at=now,
+        updated_by=uuid.uuid4(),
+        updated_at=now,
+    )
+
+
 class _Result:
     def __init__(self, target: ExecutionTarget | None = None, targets: list[ExecutionTarget] | None = None) -> None:
         self.target = target
@@ -52,11 +72,22 @@ class _Result:
 
 
 class _Session:
-    def __init__(self, *, result: _Result | None = None, fail_commit: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        result: _Result | None = None,
+        cluster: Cluster | None = None,
+        fail_commit: bool = False,
+        fail_integrity: bool = False,
+    ) -> None:
         self.result = result or _Result()
+        self.cluster = cluster or _cluster()
         self.fail_commit = fail_commit
+        self.fail_integrity = fail_integrity
         self.deleted: ExecutionTarget | None = None
+        self.added: ExecutionTarget | None = None
         self.rollbacks = 0
+        self.executed: list[object] = []
 
     async def __aenter__(self) -> Self:
         return self
@@ -64,15 +95,24 @@ class _Session:
     async def __aexit__(self, *_: object) -> None:
         return None
 
-    async def get(self, _model: object, _target_id: uuid.UUID) -> ExecutionTarget | None:
+    def add(self, target: ExecutionTarget) -> None:
+        self.added = target
+
+    async def get(self, model: object, _target_id: uuid.UUID, **_: object) -> ExecutionTarget | Cluster | None:
+        if model is Cluster:
+            return self.cluster
         return self.result.target
 
     async def execute(self, _statement: object) -> _Result:
+        self.executed.append(_statement)
         return self.result
 
     async def commit(self) -> None:
         if self.fail_commit:
             raise RuntimeError(_DATABASE_UNAVAILABLE)
+        if self.fail_integrity:
+            statement = "insert"
+            raise IntegrityError(statement, {}, RuntimeError("unique constraint violated"))
 
     async def rollback(self) -> None:
         self.rollbacks += 1
@@ -167,6 +207,142 @@ async def test_activate_updates_target_state_and_rolls_back_when_target_is_missi
 
 
 @pytest.mark.asyncio
+async def test_create_rejects_a_cluster_that_is_draining() -> None:
+    target = _target()
+    store = _store(_Session(result=_Result(), cluster=_cluster(status=ClusterStatus.DRAINING)))
+
+    with pytest.raises(ClusterNotAvailableError):
+        await store.create(
+            target.cluster_id,
+            target.name,
+            target.backend_type,
+            target.endpoint,
+            target.api_key,
+            is_default=False,
+            created_by=uuid.uuid4(),
+        )
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_create_allows_a_new_target_on_an_active_cluster() -> None:
+    target = _target()
+    session = _Session(cluster=_cluster(status=ClusterStatus.ACTIVE))
+    store = _store(session)
+
+    result = await store.create(
+        target.cluster_id,
+        target.name,
+        target.backend_type,
+        target.endpoint,
+        target.api_key,
+        is_default=False,
+        created_by=uuid.uuid4(),
+    )
+
+    assert result.api_key == ""
+    assert session.added is not None
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_a_missing_cluster() -> None:
+    class MissingClusterSession(_Session):
+        async def get(self, model: object, _target_id: uuid.UUID, **kwargs: object) -> ExecutionTarget | Cluster | None:
+            if model is Cluster:
+                return None
+            return await super().get(model, _target_id, **kwargs)
+
+    target = _target()
+    store = _store(MissingClusterSession())
+
+    with pytest.raises(ClusterNotAvailableError):
+        await store.create(
+            target.cluster_id,
+            target.name,
+            target.backend_type,
+            target.endpoint,
+            target.api_key,
+            is_default=False,
+            created_by=uuid.uuid4(),
+        )
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_an_enabled_cluster_in_another_state() -> None:
+    cluster = _cluster(status=ClusterStatus.ERROR)
+    cluster.enabled = True
+    target = _target()
+    store = _store(_Session(cluster=cluster))
+
+    with pytest.raises(ClusterNotAvailableError):
+        await store.create(
+            target.cluster_id,
+            target.name,
+            target.backend_type,
+            target.endpoint,
+            target.api_key,
+            is_default=False,
+            created_by=uuid.uuid4(),
+        )
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_default_creation_is_translated_to_a_domain_error() -> None:
+    target = _target(is_default=True)
+    store = _store(_Session(fail_integrity=True))
+
+    with pytest.raises(DefaultExecutionTargetError):
+        await store.create(
+            target.cluster_id,
+            target.name,
+            target.backend_type,
+            target.endpoint,
+            target.api_key,
+            is_default=True,
+            created_by=uuid.uuid4(),
+        )
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_non_default_integrity_errors_are_preserved() -> None:
+    target = _target()
+    store = _store(_Session(fail_integrity=True))
+
+    with pytest.raises(IntegrityError):
+        await store.create(
+            target.cluster_id,
+            target.name,
+            target.backend_type,
+            target.endpoint,
+            target.api_key,
+            is_default=False,
+            created_by=uuid.uuid4(),
+        )
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_activate_rejects_a_target_that_is_already_draining() -> None:
+    target = _target(status=TargetStatus.DRAINING)
+    store = _store(_Session(result=_Result(target)))
+
+    with pytest.raises(TargetNotActivatableError):
+        await store.activate(target.id, uuid.uuid4())
+
+    assert target.status is TargetStatus.DRAINING
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_update_can_replace_api_key_and_rejects_missing_target() -> None:
     target = _target()
     store = _store(_Session(result=_Result(target)))
@@ -215,6 +391,7 @@ async def test_finalize_cluster_delete_allows_a_drained_default_target() -> None
     await store.finalize_cluster_delete(target.id)
 
     assert session.deleted is target
+    assert session.executed
     await store.close()
 
 

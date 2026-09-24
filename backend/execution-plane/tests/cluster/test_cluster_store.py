@@ -27,7 +27,7 @@ def _cluster(*, status: ClusterStatus = ClusterStatus.ACTIVE) -> Cluster:
         endpoint="https://cluster.example",
         api_key="secret",
         status=status,
-        enabled=status is ClusterStatus.ACTIVE,
+        enabled=status is not ClusterStatus.ERROR,
         created_by=uuid.uuid4(),
         created_at=now,
         updated_by=uuid.uuid4(),
@@ -76,6 +76,7 @@ class _Session:
         self.result = _Result(targets=targets)
         self.fail_commit = fail_commit
         self.deleted: Cluster | None = None
+        self.added: Cluster | None = None
         self.rollbacks = 0
 
     async def __aenter__(self) -> Self:
@@ -84,7 +85,10 @@ class _Session:
     async def __aexit__(self, *_: object) -> None:
         return None
 
-    async def get(self, _model: object, _cluster_id: uuid.UUID) -> Cluster | None:
+    def add(self, cluster: Cluster) -> None:
+        self.added = cluster
+
+    async def get(self, _model: object, _cluster_id: uuid.UUID, **_: object) -> Cluster | None:
         return self.cluster
 
     async def execute(self, _statement: object) -> _Result:
@@ -128,6 +132,25 @@ async def test_get_redacts_cluster_credentials_and_returns_none_when_missing() -
 
 
 @pytest.mark.asyncio
+async def test_create_preserves_database_rejection_for_a_duplicate_endpoint() -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    class DuplicateEndpointSession(_Session):
+        async def commit(self) -> None:
+            statement = "insert"
+            raise IntegrityError(statement, {}, RuntimeError("clusters_endpoint_key"))
+
+    session = DuplicateEndpointSession()
+    store = _store(session)
+
+    with pytest.raises(IntegrityError):
+        await store.create("cluster-a", "https://cluster.example", "secret", uuid.uuid4())
+
+    assert session.rollbacks == 1
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_list_redacts_clusters_and_supports_status_and_enabled_filters() -> None:
     cluster = _cluster()
     store = _store(_Session())
@@ -154,15 +177,16 @@ async def test_record_discovery_state_rolls_back_for_a_missing_cluster() -> None
 
 
 @pytest.mark.asyncio
-async def test_mark_active_records_a_successful_discovery() -> None:
-    cluster = _cluster(status=ClusterStatus.REGISTERING)
-    store = _store(_Session(cluster=cluster))
+async def test_record_discovery_state_does_not_undo_a_delete_request() -> None:
+    cluster = _cluster(status=ClusterStatus.DRAINING)
+    cluster.enabled = False
+    session = _Session(cluster=cluster)
+    store = _store(session)
 
-    result = await store.mark_active(cluster.id, uuid.uuid4(), "ready")
+    result = await store.record_discovery_state(cluster.id, ClusterStatus.ACTIVE, None, uuid.uuid4())
 
-    assert result.status is ClusterStatus.ACTIVE
-    assert result.enabled is True
-    assert result.status_message == "ready"
+    assert result.status is ClusterStatus.DRAINING
+    assert result.enabled is False
     await store.close()
 
 

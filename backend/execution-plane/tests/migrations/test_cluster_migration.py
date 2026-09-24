@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib
 from unittest.mock import patch
 
+import pytest
+
 
 def test_cluster_migration_is_next_revision_and_defines_cluster_table() -> None:
     """The migration must create the Cluster table and target ownership fields."""
@@ -17,8 +19,8 @@ def test_cluster_migration_is_next_revision_and_defines_cluster_table() -> None:
     assert "clusters" in migration.upgrade.__doc__
 
 
-def test_cluster_migration_has_no_legacy_target_backfill() -> None:
-    """Green-field migration code must not contain legacy-row migration logic."""
+def test_cluster_migration_requires_an_empty_target_table_and_adds_target_constraints() -> None:
+    """The green-field migration rejects existing targets and adds new invariants."""
     migration = importlib.import_module(
         "execution_plane.migrations.versions.b7c8d9e0f1a2_add_clusters_and_registry_fields"
     )
@@ -28,10 +30,9 @@ def test_cluster_migration_has_no_legacy_target_backfill() -> None:
     assert "op.create_table" in source
     assert '"clusters"' in source
     assert '"execution_targets_cluster_id_fkey"' in source
-    assert '"uq_execution_targets_default_cluster"' not in source
-    assert 'postgresql_where=sa.text("is_default = true")' not in source
-    assert "backfill" not in source.lower()
-    assert "legacy" not in source.lower()
+    assert '"uq_execution_targets_default_cluster"' in source
+    assert 'postgresql_where=sa.text("is_default = true")' in source
+    assert "must be empty" in source
 
 
 def test_cluster_migration_upgrade_records_required_schema_operations() -> None:
@@ -43,9 +44,13 @@ def test_cluster_migration_upgrade_records_required_schema_operations() -> None:
     with (
         patch.object(migration.op, "create_table") as create_table,
         patch.object(migration.op, "add_column") as add_column,
+        patch.object(migration.op, "drop_constraint") as drop_constraint,
+        patch.object(migration.op, "create_unique_constraint") as create_unique_constraint,
         patch.object(migration.op, "create_foreign_key") as create_foreign_key,
         patch.object(migration.op, "create_index") as create_index,
+        patch.object(migration.op, "get_bind") as get_bind,
     ):
+        get_bind.return_value.execute.return_value.first.return_value = None
         migration.upgrade()
 
     cluster_call = next(call for call in create_table.call_args_list if call.args[0] == "clusters")
@@ -59,6 +64,16 @@ def test_cluster_migration_upgrade_records_required_schema_operations() -> None:
     assert default_column.nullable is False
     assert default_column.server_default is None
 
+    drop_constraint.assert_called_once_with(
+        "execution_targets_name_key", "execution_targets", schema="execution_plane", type_="unique"
+    )
+    create_unique_constraint.assert_called_once_with(
+        "execution_targets_cluster_name_key",
+        "execution_targets",
+        ["cluster_id", "name"],
+        schema="execution_plane",
+    )
+
     create_foreign_key.assert_called_once_with(
         "execution_targets_cluster_id_fkey",
         "execution_targets",
@@ -68,4 +83,25 @@ def test_cluster_migration_upgrade_records_required_schema_operations() -> None:
         source_schema="execution_plane",
         referent_schema="execution_plane",
     )
-    create_index.assert_not_called()
+    create_index.assert_called_once()
+    index_args, index_kwargs = create_index.call_args
+    assert index_args == ("uq_execution_targets_default_cluster", "execution_targets", ["cluster_id"])
+    assert index_kwargs["unique"] is True
+    assert index_kwargs["schema"] == "execution_plane"
+    assert str(index_kwargs["postgresql_where"]) == "is_default = true"
+
+
+def test_cluster_migration_rejects_existing_execution_targets() -> None:
+    migration = importlib.import_module(
+        "execution_plane.migrations.versions.b7c8d9e0f1a2_add_clusters_and_registry_fields"
+    )
+
+    with (
+        patch.object(migration.op, "get_bind") as get_bind,
+        pytest.raises(
+            RuntimeError,
+            match=r"execution_plane\.execution_targets must be empty for this migration",
+        ),
+    ):
+        get_bind.return_value.execute.return_value.first.return_value = object()
+        migration._require_empty_execution_targets()

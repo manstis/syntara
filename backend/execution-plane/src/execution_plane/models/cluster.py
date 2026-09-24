@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Column, String
+from sqlalchemy import Column, String, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import DateTime
@@ -30,11 +30,11 @@ class Cluster(SQLModel, table=True):
     """A registered control-plane cluster."""
 
     __tablename__ = "clusters"
-    __table_args__ = ({"schema": EP_SCHEMA},)
+    __table_args__ = (UniqueConstraint("endpoint", name="clusters_endpoint_key"), {"schema": EP_SCHEMA})
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     name: str = Field(sa_column=Column(String, nullable=False, unique=True))
-    endpoint: str = Field(sa_column=Column(String, nullable=False, unique=True))
+    endpoint: str = Field(sa_column=Column(String, nullable=False))
     status: ClusterStatus = Field(
         default=ClusterStatus.REGISTERING,
         sa_column=Column(

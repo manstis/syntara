@@ -14,6 +14,7 @@ from execution_plane.execution_target.execution_target_store import (
     ExecutionTargetStore,
     TargetNotDrainedError,
 )
+from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 from sqlalchemy.pool import NullPool
 
@@ -39,6 +40,22 @@ def _target(*, is_default: bool = False, status: TargetStatus = TargetStatus.REG
     )
 
 
+def _cluster() -> Cluster:
+    now = datetime.now(UTC)
+    return Cluster(
+        id=uuid.uuid4(),
+        name="cluster-a",
+        endpoint="https://cluster.example",
+        api_key="secret",
+        status=ClusterStatus.REGISTERING,
+        enabled=True,
+        created_by=uuid.uuid4(),
+        created_at=now,
+        updated_by=uuid.uuid4(),
+        updated_at=now,
+    )
+
+
 class _Result:
     def __init__(self, item: ExecutionTarget | None = None) -> None:
         self.item = item
@@ -56,6 +73,7 @@ class _Result:
 class _Session:
     def __init__(self, *, result: _Result | None = None, fail_commit: bool = False) -> None:
         self.result = result or _Result()
+        self.cluster = _cluster()
         self.fail_commit = fail_commit
         self.added: ExecutionTarget | None = None
         self.deleted: ExecutionTarget | None = None
@@ -74,7 +92,9 @@ class _Session:
     async def execute(self, _statement: object) -> _Result:
         return self.result
 
-    async def get(self, _model: object, _target_id: uuid.UUID) -> ExecutionTarget | None:
+    async def get(self, model: object, _target_id: uuid.UUID, **_: object) -> ExecutionTarget | Cluster | None:
+        if model is Cluster:
+            return self.cluster
         return self.result.item
 
     async def commit(self) -> None:

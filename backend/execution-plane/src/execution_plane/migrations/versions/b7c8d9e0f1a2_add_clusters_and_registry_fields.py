@@ -16,10 +16,18 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 EP = "execution_plane"
+EMPTY_TARGETS_MESSAGE = "execution_plane.execution_targets must be empty for this migration"
+
+
+def _require_empty_execution_targets() -> None:
+    """Require the green-field target table before adding mandatory fields."""
+    if op.get_bind().execute(sa.text("SELECT 1 FROM execution_plane.execution_targets LIMIT 1")).first() is not None:
+        raise RuntimeError(EMPTY_TARGETS_MESSAGE)
 
 
 def upgrade() -> None:
     """Create clusters and add Cluster ownership to execution targets."""
+    _require_empty_execution_targets()
     op.create_table(
         "clusters",
         sa.Column("id", sa.UUID(), nullable=False),
@@ -58,6 +66,21 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         schema=EP,
     )
+    op.drop_constraint("execution_targets_name_key", "execution_targets", schema=EP, type_="unique")
+    op.create_unique_constraint(
+        "execution_targets_cluster_name_key",
+        "execution_targets",
+        ["cluster_id", "name"],
+        schema=EP,
+    )
+    op.create_index(
+        "uq_execution_targets_default_cluster",
+        "execution_targets",
+        ["cluster_id"],
+        unique=True,
+        schema=EP,
+        postgresql_where=sa.text("is_default = true"),
+    )
     op.create_foreign_key(
         "execution_targets_cluster_id_fkey",
         "execution_targets",
@@ -71,6 +94,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove Cluster ownership and the clusters table."""
+    op.drop_index("uq_execution_targets_default_cluster", table_name="execution_targets", schema=EP)
+    op.drop_constraint("execution_targets_cluster_name_key", "execution_targets", schema=EP, type_="unique")
+    op.create_unique_constraint("execution_targets_name_key", "execution_targets", ["name"], schema=EP)
     op.drop_constraint(
         "execution_targets_cluster_id_fkey",
         "execution_targets",

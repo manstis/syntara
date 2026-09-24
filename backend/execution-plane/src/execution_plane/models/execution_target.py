@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Column, Index, String, UniqueConstraint
+from sqlalchemy import Column, Index, String, UniqueConstraint, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import DateTime
@@ -41,8 +41,14 @@ class ExecutionTarget(SQLModel, table=True):
 
     __tablename__ = "execution_targets"
     __table_args__ = (
-        UniqueConstraint("name", name="execution_targets_name_key"),
+        UniqueConstraint("cluster_id", "name", name="execution_targets_cluster_name_key"),
         Index("ix_execution_targets_name", "name"),
+        Index(
+            "uq_execution_targets_default_cluster",
+            "cluster_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
         {"schema": EP_SCHEMA},
     )
 

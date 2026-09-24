@@ -36,6 +36,13 @@ class ClusterNotDrainedError(ValueError):
 class ClusterStore(StoreBase):
     """Persist Cluster state and own the database resources it uses."""
 
+    @staticmethod
+    def _can_record_discovery_state(cluster: Cluster) -> bool:
+        """Return whether a Cluster can have its discovery state set."""
+        if not cluster.enabled:
+            return False
+        return cluster.status is ClusterStatus.REGISTERING
+
     async def create(
         self,
         name: str,
@@ -93,9 +100,11 @@ class ClusterStore(StoreBase):
         """Persist registration/discovery state on the existing Cluster."""
         async with self._session_context() as session:
             try:
-                cluster = await session.get(Cluster, cluster_id)
+                cluster = await session.get(Cluster, cluster_id, with_for_update=True)
                 if cluster is None:
                     raise ClusterNotFoundError(cluster_id)  # noqa: TRY301
+                if not self._can_record_discovery_state(cluster):
+                    return self._without_secret(cluster)
                 cluster.status = status
                 cluster.enabled = status is not ClusterStatus.ERROR
                 cluster.status_message = status_message
@@ -107,17 +116,11 @@ class ClusterStore(StoreBase):
                 await session.rollback()
                 raise
 
-    async def mark_active(
-        self, cluster_id: uuid.UUID, updated_by: uuid.UUID, status_message: str | None = None
-    ) -> Cluster:
-        """Mark a successfully registered Cluster active."""
-        return await self.record_discovery_state(cluster_id, ClusterStatus.ACTIVE, status_message, updated_by)
-
     async def request_delete(self, cluster_id: uuid.UUID, updated_by: uuid.UUID) -> Cluster:
         """Disable a Cluster and all targets before asynchronous draining."""
         async with self._session_context() as session:
             try:
-                cluster = await session.get(Cluster, cluster_id)
+                cluster = await session.get(Cluster, cluster_id, with_for_update=True)
                 if cluster is None:
                     raise ClusterNotFoundError(cluster_id)  # noqa: TRY301
                 now = datetime.now(UTC)
