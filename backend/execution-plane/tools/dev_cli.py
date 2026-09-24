@@ -129,22 +129,27 @@ def _context_args(context: str | None) -> list[str]:
     return ["--context", context] if context else []
 
 
-def _run_command(runner: CommandRunner, args: list[str]) -> None:
+def _run_command(runner: CommandRunner, args: list[str]) -> CommandResult:
     result = runner.run(args)
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or f"command exited with status {result.returncode}"
         raise EnvironmentSelectionError(f"{' '.join(args)} failed: {detail}")
+    return result
 
 
 def _run_openshift_check(runner: CommandRunner, context: str | None, namespace: str) -> None:
     context_args = _context_args(context)
     _run_command(runner, ["oc", "whoami", *context_args])
-    _run_command(runner, ["oc", "project", namespace, *context_args])
+    _run_command(runner, ["oc", "get", "project", namespace, *context_args])
 
 
 def _run_kind_command(runner: CommandRunner, command: str, cluster: str) -> None:
-    if command == "status":
-        _run_command(runner, ["kind", "get", "clusters"])
+    if command in {"doctor", "status"}:
+        result = _run_command(runner, ["kind", "get", "clusters"])
+        clusters = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+        if cluster not in clusters:
+            raise EnvironmentSelectionError(f"kind cluster '{cluster}' was not found; run 'up' to create it")
+        print(f"kind cluster '{cluster}' is available.")
     if command in {"down", "reset"}:
         _run_command(runner, ["kind", "delete", "cluster", "--name", cluster])
     if command in {"up", "reset"}:
@@ -152,10 +157,12 @@ def _run_kind_command(runner: CommandRunner, command: str, cluster: str) -> None
 
 
 def _run_minikube_command(runner: CommandRunner, command: str, profile: str) -> None:
-    if command == "status":
-        _run_command(runner, ["minikube", "status", "--profile", profile])
+    if command in {"doctor", "status"}:
+        result = _run_command(runner, ["minikube", "status", "--profile", profile])
+        print(result.stdout.strip() or f"minikube profile '{profile}' is available.")
     if command == "down":
         _run_command(runner, ["minikube", "stop", "--profile", profile])
+        _run_command(runner, ["minikube", "delete", "--profile", profile])
     if command == "reset":
         _run_command(runner, ["minikube", "delete", "--profile", profile])
     if command in {"up", "reset"}:
@@ -200,6 +207,8 @@ def main(
                 print(f"Remote OpenShift is reachable in namespace {args.namespace}.")
             return 0
         provider = EnvironmentProvider(selected) if selected != EnvironmentProvider.AUTO else local[0]
+        if args.command == "connect":
+            raise EnvironmentSelectionError("connect is only supported for remote OpenShift; use 'status' locally")
         print(f"Local Kubernetes provider selected: {provider.value}")
         _run_local_command(command_runner, provider, args.command, args.cluster, args.yes)
         return 0

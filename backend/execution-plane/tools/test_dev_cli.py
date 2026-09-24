@@ -71,22 +71,47 @@ def test_kind_up_creates_the_requested_cluster() -> None:
     assert runner.commands == [("kind", "create", "cluster", "--name", "execution-plane")]
 
 
-def test_minikube_down_stops_the_requested_profile() -> None:
+def test_minikube_down_stops_and_deletes_the_requested_profile() -> None:
     runner = FakeRunner()
 
     assert (
         main(["--provider", "minikube", "down"], runner=runner, executable_exists=executable_checker("minikube")) == 0
     )
 
-    assert runner.commands == [("minikube", "stop", "--profile", "execution-plane")]
+    assert runner.commands == [
+        ("minikube", "stop", "--profile", "execution-plane"),
+        ("minikube", "delete", "--profile", "execution-plane"),
+    ]
 
 
 def test_kind_status_lists_clusters() -> None:
-    runner = FakeRunner()
+    runner = FakeRunner(CommandResult(0, "execution-plane\n"))
 
     assert main(["--provider", "kind", "status"], runner=runner, executable_exists=executable_checker("kind")) == 0
 
     assert runner.commands == [("kind", "get", "clusters")]
+
+
+def test_kind_status_fails_when_the_requested_cluster_is_missing() -> None:
+    runner = FakeRunner(CommandResult(0, "other-cluster\n"))
+
+    assert main(["--provider", "kind", "status"], runner=runner, executable_exists=executable_checker("kind")) == 1
+
+
+def test_local_doctor_checks_the_selected_environment() -> None:
+    runner = FakeRunner(CommandResult(0, "execution-plane\n"))
+
+    assert main(["--provider", "kind", "doctor"], runner=runner, executable_exists=executable_checker("kind")) == 0
+
+    assert runner.commands == [("kind", "get", "clusters")]
+
+
+def test_local_connect_is_rejected() -> None:
+    runner = FakeRunner()
+
+    assert main(["--provider", "kind", "connect"], runner=runner, executable_exists=executable_checker("kind")) == 1
+
+    assert runner.commands == []
 
 
 def test_minikube_reset_recreates_the_requested_profile() -> None:
@@ -129,7 +154,7 @@ def test_openshift_connect_validates_the_selected_context_and_namespace() -> Non
 
     assert runner.commands == [
         ("oc", "whoami", "--context", "remote-dev"),
-        ("oc", "project", "execution-plane", "--context", "remote-dev"),
+        ("oc", "get", "project", "execution-plane", "--context", "remote-dev"),
     ]
 
 
