@@ -71,6 +71,15 @@ def test_kind_up_creates_the_requested_cluster() -> None:
     assert runner.commands == [("kind", "create", "cluster", "--name", "execution-plane")]
 
 
+def test_mixed_case_provider_environment_value_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EP_DEV_PROVIDER", "KIND")
+    runner = FakeRunner()
+
+    assert main(["up"], runner=runner, executable_exists=executable_checker("kind")) == 0
+
+    assert runner.commands == [("kind", "create", "cluster", "--name", "execution-plane")]
+
+
 def test_minikube_down_stops_and_deletes_the_requested_profile() -> None:
     runner = FakeRunner()
 

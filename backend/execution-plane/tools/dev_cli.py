@@ -192,7 +192,7 @@ def main(
 ) -> int:
     """Run the development environment CLI."""
     args = _build_parser().parse_args(argv)
-    selected = args.provider
+    selected = args.provider.lower()
     command_runner = runner or SubprocessRunner()
     local = available_local_providers(executable_exists)
     try:
