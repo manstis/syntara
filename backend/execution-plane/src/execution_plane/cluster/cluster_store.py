@@ -116,6 +116,29 @@ class ClusterStore(StoreBase):
                 await session.rollback()
                 raise
 
+    async def mark_drain_failed(
+        self,
+        cluster_id: uuid.UUID,
+        status_message: str,
+        updated_by: uuid.UUID,
+    ) -> Cluster:
+        """Persist a failed drain on a Cluster that is no longer available."""
+        async with self._session_context() as session:
+            try:
+                cluster = await session.get(Cluster, cluster_id, with_for_update=True)
+                if cluster is None:
+                    raise ClusterNotFoundError(cluster_id)  # noqa: TRY301
+                cluster.enabled = False
+                cluster.status = ClusterStatus.ERROR
+                cluster.status_message = status_message
+                cluster.updated_by = updated_by
+                cluster.updated_at = datetime.now(UTC)
+                await session.commit()
+                return self._without_secret(cluster)
+            except Exception:
+                await session.rollback()
+                raise
+
     async def request_delete(self, cluster_id: uuid.UUID, updated_by: uuid.UUID) -> Cluster:
         """Disable a Cluster and all targets before asynchronous draining."""
         async with self._session_context() as session:

@@ -141,9 +141,7 @@ class DrainMonitor:
             raise
         except Exception:  # noqa: BLE001
             try:
-                await self._cluster_store.record_discovery_state(
-                    cluster_id, ClusterStatus.ERROR, "cluster drain failed", updated_by
-                )
+                await self._cluster_store.mark_drain_failed(cluster_id, "cluster drain failed", updated_by)
             except Exception:  # noqa: BLE001
                 return
 

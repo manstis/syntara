@@ -191,6 +191,23 @@ async def test_record_discovery_state_does_not_undo_a_delete_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mark_drain_failed_persists_error_on_a_draining_cluster() -> None:
+    cluster = _cluster(status=ClusterStatus.DRAINING)
+    cluster.enabled = False
+    session = _Session(cluster=cluster)
+    store = _store(session)
+    actor_id = uuid.uuid4()
+
+    result = await store.mark_drain_failed(cluster.id, "cluster drain failed", actor_id)
+
+    assert result.status is ClusterStatus.ERROR
+    assert result.enabled is False
+    assert result.status_message == "cluster drain failed"
+    assert result.updated_by == actor_id
+    await store.close()
+
+
+@pytest.mark.asyncio
 async def test_request_delete_rolls_back_for_a_missing_cluster() -> None:
     session = _Session()
     store = _store(session)
