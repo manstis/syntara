@@ -220,13 +220,12 @@ async def _lifespan_startup(app: FastAPI) -> dict[str, Any]:  # noqa: PLR0915
     # ========================================================================
     # TEMPORARY SYNTARA / EXECUTION PLANE BOUNDARY
     # ------------------------------------------------------------------------
-    # The Execution Plane API is temporarily hosted by Syntara. This router
-    # inclusion moves to the standalone Execution Plane service when it is
-    # extracted. The Execution Plane worker owns DrainMonitor and its stores.
-    # See docs/execution-plane/integration.md.
+    # BOUNDARY CROSSING — see docs/execution-plane/integration.md.
+    # The EP public API (GET /execution_targets, GET /work_items) is temporarily
+    # hosted by Syntara. When the EP worker becomes a standalone service this
+    # include_router call and its import move out with it.
     # ------------------------------------------------------------------------
     app.include_router(ep_router)
-
     # ========================================================================
 
     # Register WebSocket router manually (excluded from router discovery)
