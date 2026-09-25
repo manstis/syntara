@@ -162,6 +162,35 @@ async def test_bootstrap_is_idempotent_for_existing_cluster_and_target(
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_rejects_incomplete_existing_registration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from execution_plane import bootstrap
+    from execution_plane.cluster.cluster_store import ClusterStore
+    from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
+
+    cluster = _cluster()
+    target = ExecutionTarget(
+        cluster_id=cluster.id,
+        name="local-default",
+        endpoint="local://execution-plane/default",
+        api_key="target-secret",
+        backend_type=BackendType.VANILLA_K8S,
+        is_default=True,
+        status=TargetStatus.ACTIVE,
+        created_by=uuid.uuid4(),
+        created_at=datetime.now(UTC),
+        updated_by=uuid.uuid4(),
+        updated_at=datetime.now(UTC),
+    )
+    cluster_store = _ClusterStore(cluster)
+    target_store = _ExecutionTargetStore([target])
+    monkeypatch.setattr(ClusterStore, "from_database_url", lambda _url: _StoreContext(cluster_store))
+    monkeypatch.setattr(ExecutionTargetStore, "from_database_url", lambda _url: _StoreContext(target_store))
+
+    with pytest.raises(RuntimeError, match="incomplete"):
+        await bootstrap.bootstrap_local_cluster("postgresql+asyncpg://localhost/syntara")
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_repairs_existing_cluster_without_target(monkeypatch: pytest.MonkeyPatch) -> None:
     from execution_plane import bootstrap
     from execution_plane.cluster.cluster_store import ClusterStore

@@ -15,7 +15,7 @@ from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.models.cluster import Cluster, ClusterStatus
-from execution_plane.models.execution_target import BackendType
+from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
 
 LOCAL_CLUSTER_NAME = "local-execution-plane"
 LOCAL_CLUSTER_ENDPOINT = "local://execution-plane"
@@ -23,6 +23,14 @@ LOCAL_TARGET_NAME = "local-default"
 LOCAL_TARGET_ENDPOINT = "local://execution-plane/default"
 LOCAL_API_KEY = "local-execution-plane"
 BOOTSTRAP_ACTOR_ID = uuid.UUID(int=0)
+
+
+class LocalClusterBootstrapError(RuntimeError):
+    """Raised when the persisted local Cluster cannot safely be used."""
+
+    def __init__(self, status: ClusterStatus) -> None:
+        """Identify the incomplete registration state."""
+        super().__init__(f"Local Cluster registration is incomplete: {status.value}")
 
 
 class LocalDiscoveryMechanism:
@@ -60,16 +68,22 @@ async def bootstrap_local_cluster(
             None,
         )
         if cluster is None:
-            return await cluster_registry.register(
+            cluster = await cluster_registry.register(
                 LOCAL_CLUSTER_NAME,
                 LOCAL_CLUSTER_ENDPOINT,
                 LOCAL_API_KEY,
                 created_by,
             )
+            targets = await target_registry.list(cluster_id=cluster.id)
+            if _is_healthy(cluster, targets):
+                return cluster
+            raise LocalClusterBootstrapError(cluster.status)
 
         targets = await target_registry.list(cluster_id=cluster.id)
-        if targets:
+        if _is_healthy(cluster, targets):
             return cluster
+        if targets or not cluster.enabled or cluster.status is not ClusterStatus.REGISTERING:
+            raise LocalClusterBootstrapError(cluster.status)
 
         result = discovery.discover(ClusterRegistration(LOCAL_CLUSTER_NAME, LOCAL_CLUSTER_ENDPOINT, "", {}))
         target = result.targets[0]
@@ -89,3 +103,15 @@ async def bootstrap_local_cluster(
             None,
             created_by,
         )
+
+
+def _is_healthy(cluster: Cluster, targets: list[ExecutionTarget]) -> bool:
+    """Return whether the local Cluster has one usable default target."""
+    defaults = [target for target in targets if target.is_default]
+    return (
+        cluster.enabled
+        and cluster.status is ClusterStatus.ACTIVE
+        and len(defaults) == 1
+        and defaults[0].enabled
+        and defaults[0].status is TargetStatus.ACTIVE
+    )
