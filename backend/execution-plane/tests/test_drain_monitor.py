@@ -66,10 +66,6 @@ class _TargetStore:
         self.finalized.append(target_id)
         self.targets[:] = [target for target in self.targets if target.id != target_id]
 
-    async def finalize_cluster_delete(self, target_id: uuid.UUID) -> None:
-        self.finalized.append(target_id)
-        self.targets[:] = [target for target in self.targets if target.id != target_id]
-
     async def mark_failed(self, target_id: uuid.UUID, _updated_by: uuid.UUID) -> None:
         self.failed.append(target_id)
 

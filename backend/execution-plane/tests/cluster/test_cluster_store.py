@@ -8,8 +8,6 @@ from typing import Self
 
 import pytest
 from execution_plane.cluster.cluster_store import (
-    ClusterHasTargetsError,
-    ClusterNotDrainedError,
     ClusterNotFoundError,
     ClusterStore,
 )
@@ -233,14 +231,13 @@ async def test_finalize_delete_removes_a_drained_cluster_without_targets() -> No
 
 
 @pytest.mark.asyncio
-async def test_finalize_delete_rejects_missing_cluster() -> None:
+async def test_finalize_delete_ignores_a_missing_cluster() -> None:
     session = _Session()
     store = _store(session)
 
-    with pytest.raises(ClusterNotFoundError):
-        await store.finalize_delete(uuid.uuid4())
+    await store.finalize_delete(uuid.uuid4())
 
-    assert session.rollbacks == 1
+    assert session.rollbacks == 0
     await store.close()
 
 
@@ -273,26 +270,24 @@ async def test_request_delete_marks_each_target_as_draining() -> None:
 
 
 @pytest.mark.asyncio
-async def test_finalize_delete_rejects_a_cluster_with_remaining_targets() -> None:
+async def test_finalize_delete_ignores_a_cluster_with_remaining_targets() -> None:
     cluster = _cluster(status=ClusterStatus.DRAINING)
     cluster.enabled = False
     session = _Session(cluster=cluster, targets=[_target(cluster.id)])
     store = _store(session)
 
-    with pytest.raises(ClusterHasTargetsError):
-        await store.finalize_delete(cluster.id)
+    await store.finalize_delete(cluster.id)
 
     await store.close()
 
 
 @pytest.mark.asyncio
-async def test_finalize_delete_rejects_an_enabled_cluster() -> None:
+async def test_finalize_delete_ignores_an_enabled_cluster() -> None:
     cluster = _cluster(status=ClusterStatus.DRAINING)
     cluster.enabled = True
     session = _Session(cluster=cluster)
     store = _store(session)
 
-    with pytest.raises(ClusterNotDrainedError):
-        await store.finalize_delete(cluster.id)
+    await store.finalize_delete(cluster.id)
 
     await store.close()

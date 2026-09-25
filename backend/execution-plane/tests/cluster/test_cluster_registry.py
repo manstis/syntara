@@ -187,8 +187,8 @@ async def test_store_request_delete_drains_cluster_and_its_targets() -> None:
 
 
 @pytest.mark.asyncio
-async def test_store_refuses_cluster_finalization_until_targets_are_removed() -> None:
-    from execution_plane.cluster.cluster_store import ClusterHasTargetsError, ClusterStore
+async def test_store_ignores_cluster_finalization_until_targets_are_removed() -> None:
+    from execution_plane.cluster.cluster_store import ClusterStore
 
     cluster = _cluster(status=ClusterStatus.DRAINING)
     cluster.enabled = False
@@ -196,24 +196,22 @@ async def test_store_refuses_cluster_finalization_until_targets_are_removed() ->
     session = _Session(cluster=cluster, targets=[_target(cluster_id=cluster.id)])
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
 
-    with pytest.raises(ClusterHasTargetsError):
-        await store.finalize_delete(cluster.id)
+    await store.finalize_delete(cluster.id)
 
     assert session.deleted is None
     await store.close()
 
 
 @pytest.mark.asyncio
-async def test_store_refuses_cluster_finalization_before_draining() -> None:
-    from execution_plane.cluster.cluster_store import ClusterNotDrainedError, ClusterStore
+async def test_store_ignores_cluster_finalization_before_draining() -> None:
+    from execution_plane.cluster.cluster_store import ClusterStore
 
     cluster = _cluster(status=ClusterStatus.ACTIVE)
     store = ClusterStore("postgresql+asyncpg://localhost/syntara")
     session = _Session(cluster=cluster)
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
 
-    with pytest.raises(ClusterNotDrainedError):
-        await store.finalize_delete(cluster.id)
+    await store.finalize_delete(cluster.id)
 
     assert session.deleted is None
     await store.close()

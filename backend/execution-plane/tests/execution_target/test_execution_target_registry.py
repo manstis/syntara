@@ -12,7 +12,6 @@ from execution_plane.execution_target.execution_target_store import (
     DefaultExecutionTargetError,
     ExecutionTargetNotFoundError,
     ExecutionTargetStore,
-    TargetNotDrainedError,
 )
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
@@ -272,31 +271,29 @@ async def test_store_updates_target_metadata_and_audit_fields_without_exposing_s
 
 
 @pytest.mark.asyncio
-async def test_store_refuses_to_finalize_a_default_target() -> None:
-    """The protected default cannot be removed through target finalization."""
+async def test_store_finalizes_a_default_target_during_cluster_deletion() -> None:
+    """Default protection applies when deletion is requested, not finalized."""
     target = _target(is_default=True, status=TargetStatus.DRAINING)
     target.enabled = False
     store = ExecutionTargetStore("postgresql+asyncpg://localhost/syntara")
     session = _Session(result=_Result(target))
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
 
-    with pytest.raises(DefaultExecutionTargetError):
-        await store.finalize_delete(target.id)
+    await store.finalize_delete(target.id)
 
     assert session.deleted is None
     await store.close()
 
 
 @pytest.mark.asyncio
-async def test_store_refuses_to_finalize_a_target_that_is_not_drained() -> None:
-    """Physical deletion requires the persisted draining state."""
+async def test_store_ignores_a_target_that_is_not_drained() -> None:
+    """Finalization leaves a target alone when its state changed."""
     target = _target(status=TargetStatus.ACTIVE)
     store = ExecutionTargetStore("postgresql+asyncpg://localhost/syntara")
     session = _Session(result=_Result(target))
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
 
-    with pytest.raises(TargetNotDrainedError):
-        await store.finalize_delete(target.id)
+    await store.finalize_delete(target.id)
 
     assert session.deleted is None
     await store.close()

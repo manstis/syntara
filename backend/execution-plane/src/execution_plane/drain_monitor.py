@@ -135,7 +135,7 @@ class DrainMonitor:
             for target in targets:
                 await self._wait_until_drained(target.id)
                 if await self._target_store.get(target.id) is not None:
-                    await self._target_store.finalize_cluster_delete(target.id)
+                    await self._target_store.finalize_delete(target.id)
             await self._cluster_store.finalize_delete(cluster_id)
         except asyncio.CancelledError:
             raise

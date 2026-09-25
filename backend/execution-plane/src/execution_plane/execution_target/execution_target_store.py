@@ -31,10 +31,6 @@ class DefaultExecutionTargetError(ValueError):
     """Raised when an operation would violate default-target protection."""
 
 
-class TargetNotDrainedError(ValueError):
-    """Raised when physical deletion is attempted before draining completes."""
-
-
 class TargetNotActivatableError(ValueError):
     """Raised when a target is no longer in its registration state."""
 
@@ -233,24 +229,14 @@ class ExecutionTargetStore(StoreBase):
                 raise
 
     async def finalize_delete(self, target_id: uuid.UUID) -> None:
-        """Physically delete a drained target as part of lifecycle finalization."""
-        await self._finalize_delete(target_id, allow_default=False)
-
-    async def finalize_cluster_delete(self, target_id: uuid.UUID) -> None:
-        """Physically delete a drained target during its Cluster deletion."""
-        await self._finalize_delete(target_id, allow_default=True)
-
-    async def _finalize_delete(self, target_id: uuid.UUID, *, allow_default: bool) -> None:
-        """Delete a target after enforcing the persisted drain state."""
+        """Physically delete a drained target when finalization is safe."""
         async with self._session_context() as session:
             try:
-                target = await session.get(ExecutionTarget, target_id)
+                target = await session.get(ExecutionTarget, target_id, with_for_update=True)
                 if target is None:
-                    raise ExecutionTargetNotFoundError(target_id)  # noqa: TRY301
-                if target.is_default and not allow_default:
-                    raise DefaultExecutionTargetError  # noqa: TRY301
+                    return
                 if target.enabled or target.status != TargetStatus.DRAINING:
-                    raise TargetNotDrainedError(target_id)  # noqa: TRY301
+                    return
                 active_work = await session.execute(
                     select(col(WorkItem.id))
                     .where(col(WorkItem.execution_target_id) == target_id)
@@ -258,7 +244,7 @@ class ExecutionTargetStore(StoreBase):
                     .limit(1)
                 )
                 if active_work.scalar_one_or_none() is not None:
-                    raise TargetNotDrainedError(target_id)  # noqa: TRY301
+                    return
                 await session.execute(
                     update(WorkItem)
                     .where(col(WorkItem.execution_target_id) == target_id)

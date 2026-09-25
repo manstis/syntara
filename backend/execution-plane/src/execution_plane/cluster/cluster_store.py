@@ -25,14 +25,6 @@ class ClusterNotFoundError(LookupError):
         super().__init__(f"Cluster {cluster_id} does not exist")
 
 
-class ClusterHasTargetsError(ValueError):
-    """Raised when a Cluster is finalized before its targets are removed."""
-
-
-class ClusterNotDrainedError(ValueError):
-    """Raised when a Cluster is finalized before entering DRAINING."""
-
-
 class ClusterStore(StoreBase):
     """Persist Cluster state and own the database resources it uses."""
 
@@ -166,19 +158,19 @@ class ClusterStore(StoreBase):
                 raise
 
     async def finalize_delete(self, cluster_id: uuid.UUID) -> None:
-        """Delete a Cluster only after all associated targets are gone."""
+        """Delete a Cluster when its persisted state makes finalization safe."""
         async with self._session_context() as session:
             try:
-                cluster = await session.get(Cluster, cluster_id)
+                cluster = await session.get(Cluster, cluster_id, with_for_update=True)
                 if cluster is None:
-                    raise ClusterNotFoundError(cluster_id)  # noqa: TRY301
+                    return
                 if cluster.enabled or cluster.status is not ClusterStatus.DRAINING:
-                    raise ClusterNotDrainedError(cluster_id)  # noqa: TRY301
+                    return
                 result = await session.execute(
                     select(ExecutionTarget).where(col(ExecutionTarget.cluster_id) == cluster_id)
                 )
                 if result.scalars().all():
-                    raise ClusterHasTargetsError(cluster_id)  # noqa: TRY301
+                    return
                 await session.delete(cluster)
                 await session.commit()
             except Exception:

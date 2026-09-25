@@ -13,7 +13,6 @@ from execution_plane.execution_target.execution_target_store import (
     ExecutionTargetNotFoundError,
     ExecutionTargetStore,
     TargetNotActivatableError,
-    TargetNotDrainedError,
 )
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
@@ -408,14 +407,14 @@ async def test_mark_failed_records_failure_and_rejects_missing_target() -> None:
 
 
 @pytest.mark.asyncio
-async def test_finalize_cluster_delete_allows_a_drained_default_target() -> None:
+async def test_finalize_delete_allows_a_drained_default_target() -> None:
     target = _target(is_default=True, status=TargetStatus.DRAINING)
     target.enabled = False
     session = _Session(result=_Result(target))
     session.work_result = _ScalarResult(None)
     store = _store(session)
 
-    await store.finalize_cluster_delete(target.id)
+    await store.finalize_delete(target.id)
 
     assert session.deleted is target
     assert session.executed
@@ -423,14 +422,13 @@ async def test_finalize_cluster_delete_allows_a_drained_default_target() -> None
 
 
 @pytest.mark.asyncio
-async def test_finalize_delete_rejects_missing_target() -> None:
+async def test_finalize_delete_ignores_a_missing_target() -> None:
     session = _Session()
     store = _store(session)
 
-    with pytest.raises(ExecutionTargetNotFoundError):
-        await store.finalize_delete(uuid.uuid4())
+    await store.finalize_delete(uuid.uuid4())
 
-    assert session.rollbacks == 1
+    assert session.rollbacks == 0
     await store.close()
 
 
@@ -457,8 +455,7 @@ async def test_finalize_delete_rechecks_for_active_work_before_deleting_target()
     session.work_result = _ScalarResult(uuid.uuid4())
     store = _store(session)
 
-    with pytest.raises(TargetNotDrainedError):
-        await store.finalize_delete(target.id)
+    await store.finalize_delete(target.id)
 
     assert session.deleted is None
     await store.close()
