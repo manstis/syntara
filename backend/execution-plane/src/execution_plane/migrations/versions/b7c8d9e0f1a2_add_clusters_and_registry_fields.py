@@ -17,12 +17,28 @@ depends_on: str | Sequence[str] | None = None
 
 EP = "execution_plane"
 EMPTY_TARGETS_MESSAGE = "execution_plane.execution_targets must be empty for this migration"
+DUPLICATE_TARGET_NAMES_MESSAGE = (
+    "execution_plane.execution_targets contains duplicate names; resolve them before downgrading this migration"
+)
 
 
 def _require_empty_execution_targets() -> None:
     """Require the green-field target table before adding mandatory fields."""
     if op.get_bind().execute(sa.text("SELECT 1 FROM execution_plane.execution_targets LIMIT 1")).first() is not None:
         raise RuntimeError(EMPTY_TARGETS_MESSAGE)
+
+
+def _require_unique_target_names_for_downgrade() -> None:
+    """Prevent downgrade from restoring a global name constraint over duplicates."""
+    duplicate = (
+        op.get_bind()
+        .execute(
+            sa.text("SELECT name FROM execution_plane.execution_targets GROUP BY name HAVING COUNT(*) > 1 LIMIT 1")
+        )
+        .first()
+    )
+    if duplicate is not None:
+        raise RuntimeError(DUPLICATE_TARGET_NAMES_MESSAGE)
 
 
 def upgrade() -> None:
@@ -94,6 +110,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove Cluster ownership and the clusters table."""
+    _require_unique_target_names_for_downgrade()
     op.drop_index("uq_execution_targets_default_cluster", table_name="execution_targets", schema=EP)
     op.drop_constraint("execution_targets_cluster_name_key", "execution_targets", schema=EP, type_="unique")
     op.create_unique_constraint("execution_targets_name_key", "execution_targets", ["name"], schema=EP)

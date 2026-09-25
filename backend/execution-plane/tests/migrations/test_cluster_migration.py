@@ -105,3 +105,19 @@ def test_cluster_migration_rejects_existing_execution_targets() -> None:
     ):
         get_bind.return_value.execute.return_value.first.return_value = object()
         migration._require_empty_execution_targets()
+
+
+def test_cluster_migration_rejects_duplicate_target_names_on_downgrade() -> None:
+    migration = importlib.import_module(
+        "execution_plane.migrations.versions.b7c8d9e0f1a2_add_clusters_and_registry_fields"
+    )
+
+    with (
+        patch.object(migration.op, "get_bind") as get_bind,
+        pytest.raises(
+            RuntimeError,
+            match=r"execution_plane\.execution_targets contains duplicate names",
+        ),
+    ):
+        get_bind.return_value.execute.return_value.first.return_value = ("primary", 2)
+        migration._require_unique_target_names_for_downgrade()
