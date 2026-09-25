@@ -11,7 +11,7 @@ from sqlmodel import col
 
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
-from execution_plane.models.work_item import WorkItem
+from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.store_base import StoreBase
 
 if TYPE_CHECKING:
@@ -145,7 +145,7 @@ class ExecutionTargetStore(StoreBase):
         """Disable a non-default target and move it to DRAINING."""
         async with self._session_context() as session:
             try:
-                target = await session.get(ExecutionTarget, target_id)
+                target = await session.get(ExecutionTarget, target_id, with_for_update=True)
                 if target is None:
                     raise ExecutionTargetNotFoundError(target_id)  # noqa: TRY301
                 if target.is_default:
@@ -250,6 +250,14 @@ class ExecutionTargetStore(StoreBase):
                 if target.is_default and not allow_default:
                     raise DefaultExecutionTargetError  # noqa: TRY301
                 if target.enabled or target.status != TargetStatus.DRAINING:
+                    raise TargetNotDrainedError(target_id)  # noqa: TRY301
+                active_work = await session.execute(
+                    select(col(WorkItem.id))
+                    .where(col(WorkItem.execution_target_id) == target_id)
+                    .where(col(WorkItem.status).in_([WorkItemStatus.CLAIMED, WorkItemStatus.DISPATCHED]))
+                    .limit(1)
+                )
+                if active_work.scalar_one_or_none() is not None:
                     raise TargetNotDrainedError(target_id)  # noqa: TRY301
                 await session.execute(
                     update(WorkItem)

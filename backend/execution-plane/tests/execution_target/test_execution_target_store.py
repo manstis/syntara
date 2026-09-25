@@ -13,6 +13,7 @@ from execution_plane.execution_target.execution_target_store import (
     ExecutionTargetNotFoundError,
     ExecutionTargetStore,
     TargetNotActivatableError,
+    TargetNotDrainedError,
 )
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
@@ -71,6 +72,14 @@ class _Result:
         return self.targets
 
 
+class _ScalarResult:
+    def __init__(self, value: uuid.UUID | None) -> None:
+        self.value = value
+
+    def scalar_one_or_none(self) -> uuid.UUID | None:
+        return self.value
+
+
 class _Session:
     def __init__(
         self,
@@ -88,6 +97,8 @@ class _Session:
         self.added: ExecutionTarget | None = None
         self.rollbacks = 0
         self.executed: list[object] = []
+        self.get_for_update: list[bool] = []
+        self.work_result: _ScalarResult | None = None
 
     async def __aenter__(self) -> Self:
         return self
@@ -99,12 +110,15 @@ class _Session:
         self.added = target
 
     async def get(self, model: object, _target_id: uuid.UUID, **_: object) -> ExecutionTarget | Cluster | None:
+        self.get_for_update.append(bool(_.get("with_for_update", False)))
         if model is Cluster:
             return self.cluster
         return self.result.target
 
     async def execute(self, _statement: object) -> _Result:
         self.executed.append(_statement)
+        if self.work_result is not None:
+            return self.work_result  # type: ignore[return-value]
         return self.result
 
     async def commit(self) -> None:
@@ -186,6 +200,18 @@ async def test_request_delete_rejects_missing_and_default_targets() -> None:
     with pytest.raises(DefaultExecutionTargetError):
         await default_store.request_delete(default.id, uuid.uuid4())
     await default_store.close()
+
+
+@pytest.mark.asyncio
+async def test_request_delete_locks_the_target_before_draining() -> None:
+    target = _target()
+    session = _Session(result=_Result(target))
+    store = _store(session)
+
+    await store.request_delete(target.id, uuid.uuid4())
+
+    assert session.get_for_update == [True]
+    await store.close()
 
 
 @pytest.mark.asyncio
@@ -386,6 +412,7 @@ async def test_finalize_cluster_delete_allows_a_drained_default_target() -> None
     target = _target(is_default=True, status=TargetStatus.DRAINING)
     target.enabled = False
     session = _Session(result=_Result(target))
+    session.work_result = _ScalarResult(None)
     store = _store(session)
 
     await store.finalize_cluster_delete(target.id)
@@ -412,10 +439,26 @@ async def test_finalize_delete_rolls_back_when_deletion_commit_fails() -> None:
     target = _target(status=TargetStatus.DRAINING)
     target.enabled = False
     session = _Session(result=_Result(target), fail_commit=True)
+    session.work_result = _ScalarResult(None)
     store = _store(session)
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         await store.finalize_delete(target.id)
 
     assert session.rollbacks == 1
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_finalize_delete_rechecks_for_active_work_before_deleting_target() -> None:
+    target = _target(status=TargetStatus.DRAINING)
+    target.enabled = False
+    session = _Session(result=_Result(target))
+    session.work_result = _ScalarResult(uuid.uuid4())
+    store = _store(session)
+
+    with pytest.raises(TargetNotDrainedError):
+        await store.finalize_delete(target.id)
+
+    assert session.deleted is None
     await store.close()

@@ -155,6 +155,9 @@ async def test_claim_one_assigns_an_eligible_target_in_the_claim_transaction() -
     assert claimed.status is WorkItemStatus.CLAIMED
     assert claimed.claimed_at is not None
     assert session.commits == 1
+    target_statement = session.execute.await_args_list[1].args[0]
+    assert target_statement._for_update_arg is not None
+    assert target_statement._for_update_arg.skip_locked is True
     await store.close()
 
 

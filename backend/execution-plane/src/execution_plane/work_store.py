@@ -87,6 +87,7 @@ class WorkStore(StoreBase):
                     .where(col(Cluster.status) == ClusterStatus.ACTIVE)
                     .order_by(col(ExecutionTarget.is_default).desc(), col(ExecutionTarget.id))
                     .limit(1)
+                    .with_for_update(skip_locked=True, of=ExecutionTarget)
                 )
                 target_id = target_result.scalar_one_or_none()
                 if target_id is None:
