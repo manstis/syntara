@@ -14,11 +14,7 @@ from typing import Annotated, Any
 
 import structlog
 import uvicorn
-from execution_plane.cluster.cluster_store import ClusterStore
-from execution_plane.drain_monitor import DrainMonitor
-from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.router import router as ep_router
-from execution_plane.work_store import WorkStore
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -224,24 +220,13 @@ async def _lifespan_startup(app: FastAPI) -> dict[str, Any]:  # noqa: PLR0915
     # ========================================================================
     # TEMPORARY SYNTARA / EXECUTION PLANE BOUNDARY
     # ------------------------------------------------------------------------
-    # The Execution Plane API and drain monitor are temporarily hosted by
-    # Syntara. This entire block, including its imports and lifecycle wiring,
-    # moves to the standalone Execution Plane service when it is extracted.
-    # The stores borrow Syntara's shared engine; the monitor is the only
-    # resource retained by this lifespan because it owns the long-lived drain
-    # task. See docs/execution-plane/integration.md.
+    # The Execution Plane API is temporarily hosted by Syntara. This router
+    # inclusion moves to the standalone Execution Plane service when it is
+    # extracted. The Execution Plane worker owns DrainMonitor and its stores.
+    # See docs/execution-plane/integration.md.
     # ------------------------------------------------------------------------
     app.include_router(ep_router)
 
-    execution_target_store = ExecutionTargetStore.from_engine(engine)
-    cluster_store = ClusterStore.from_engine(engine)
-    work_store = WorkStore.from_engine(engine)
-    drain_monitor = DrainMonitor(
-        execution_target_store,
-        cluster_store,
-        work_store,
-    )
-    await drain_monitor.start()
     # ========================================================================
 
     # Register WebSocket router manually (excluded from router discovery)
@@ -328,7 +313,6 @@ async def _lifespan_startup(app: FastAPI) -> dict[str, Any]:  # noqa: PLR0915
         "schedule_reconciliation_worker": schedule_reconciliation_worker,
         "runtime_settings": runtime_settings,
         "rate_limit_redis": rate_limit_redis,
-        "drain_monitor": drain_monitor,
     }
 
 
@@ -356,15 +340,6 @@ async def _lifespan_shutdown(resources: dict[str, Any]) -> None:
     await resources["runtime_settings"].stop_watching()
 
     await resources["authz_evaluator"].stop()
-
-    # ========================================================================
-    # TEMPORARY SYNTARA / EXECUTION PLANE BOUNDARY — SHUTDOWN
-    # ------------------------------------------------------------------------
-    # This stop belongs with the startup block above and moves with the
-    # Execution Plane when it is extracted from the Syntara application.
-    # ------------------------------------------------------------------------
-    await resources["drain_monitor"].stop()
-    # ========================================================================
 
     # Flush and stop audit subsystems before DB dispose so the outbox drain can still query the database
     await stop_audit_subsystems()
