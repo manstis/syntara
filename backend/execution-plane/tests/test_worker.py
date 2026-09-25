@@ -38,11 +38,16 @@ async def test_run_worker_owns_drain_monitor_for_the_worker_lifetime(monkeypatch
     events: list[str] = []
     monkeypatch.setattr(worker, "bootstrap_local_cluster", _bootstrap)
 
-    monkeypatch.setattr(worker.WorkStore, "from_database_url", lambda _url: _StoreContext("work", events))
-    monkeypatch.setattr(worker.ClusterStore, "from_database_url", lambda _url: _StoreContext("cluster", events))
     monkeypatch.setattr(
-        worker.ExecutionTargetStore,
-        "from_database_url",
+        "execution_plane.worker.WorkStore.from_database_url",
+        lambda _url: _StoreContext("work", events),
+    )
+    monkeypatch.setattr(
+        "execution_plane.worker.ClusterStore.from_database_url",
+        lambda _url: _StoreContext("cluster", events),
+    )
+    monkeypatch.setattr(
+        "execution_plane.worker.ExecutionTargetStore.from_database_url",
         lambda _url: _StoreContext("target", events),
     )
     monkeypatch.setattr(
