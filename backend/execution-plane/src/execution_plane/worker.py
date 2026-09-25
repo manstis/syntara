@@ -11,6 +11,7 @@ from typing import Any
 import asyncpg
 import structlog
 
+from execution_plane.bootstrap import bootstrap_local_cluster
 from execution_plane.config import get_ep_settings, to_asyncpg_url
 from execution_plane.models.work_item import WorkItem, WorkItemStatus
 from execution_plane.script_executor import ScriptExecutionError, execute_script
@@ -139,6 +140,7 @@ async def run_worker(
     Cancellation closes both the notification listener and the polling task,
     then disposes the WorkStore.
     """
+    await bootstrap_local_cluster(database_url)
     async with WorkStore.from_database_url(database_url) as work_store:
         await _recover_undelivered(work_store, completion_callback)
         wakeup_event = asyncio.Event()
