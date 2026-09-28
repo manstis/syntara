@@ -244,7 +244,10 @@ endif
 .PHONY: ep-migrate
 ep-migrate: check-deps ## Apply execution_plane schema migrations (separate from main Syntara migrations)
 	@echo "🔄 Running execution_plane migrations..."
-	@cd execution-plane && APP_ADMIN_PASSWORD_PATH=../.secrets/admin-password uv run alembic upgrade head
+	@cd execution-plane && \
+		DATABASE_URL=$${DATABASE_URL:-$${APP_DATABASE_URL:-postgresql+asyncpg://admin:admin@localhost:5432/syntara_api}} \
+		APP_ADMIN_PASSWORD_PATH=../.secrets/admin-password \
+		uv run alembic upgrade head
 	@echo "✅ execution_plane migrations complete"
 
 .PHONY: db-seed
@@ -334,25 +337,6 @@ ep-worker-run: check-deps _ensure-secrets _ensure-certs ## Run execution plane T
 	APP_S2S_TLS_KEY_PATH=.secrets/certs/worker.key \
 	uv run python -m execution_plane.worker
 
-.PHONY: ep-dev-doctor ep-dev-status ep-dev-up ep-dev-down ep-dev-reset ep-dev-connect
-ep-dev-doctor: check-deps ## Check the selected Kubernetes development environment
-	@uv run python execution-plane/tools/dev_cli.py doctor
-
-ep-dev-status: check-deps ## Check connectivity to the selected Kubernetes development environment
-	@uv run python execution-plane/tools/dev_cli.py status
-
-ep-dev-up: check-deps ## Create or start the local Kubernetes development environment
-	@uv run python execution-plane/tools/dev_cli.py up
-
-ep-dev-down: check-deps ## Stop or remove the local Kubernetes development environment
-	@uv run python execution-plane/tools/dev_cli.py down
-
-ep-dev-reset: check-deps ## Recreate the local Kubernetes development environment
-	@uv run python execution-plane/tools/dev_cli.py reset --yes
-
-ep-dev-connect: check-deps ## Validate access to the configured remote OpenShift environment
-	@uv run python execution-plane/tools/dev_cli.py --provider openshift connect
-
 .PHONY: background-worker-run
 background-worker-run: check-deps _ensure-secrets _ensure-certs ## Run Temporal workflow background worker
 	@echo "🔄 Starting Temporal workflow background worker..."
@@ -367,6 +351,33 @@ background-worker-run: check-deps _ensure-secrets _ensure-certs ## Run Temporal 
 	APP_APPROVALS_API_BASE_URL=$(WORKER_BASE_URL) \
 	APP_TOOL_MANAGER_BASE_URL=$(WORKER_BASE_URL) \
 	uv run python -m syntara.workflows.background_worker
+
+
+# Execution Plane CLI tool
+# ========================================================
+
+# Pass additional arguments to the CLI, for example:
+#   make ep-dev-up EP_DEV_ARGS="--provider kind --cluster local"
+EP_DEV_ARGS ?=
+
+.PHONY: ep-dev-doctor ep-dev-status ep-dev-up ep-dev-down ep-dev-reset ep-dev-connect
+ep-dev-doctor: check-deps ## Check the selected Kubernetes development environment
+	@uv run python execution-plane/tools/dev_cli.py doctor $(EP_DEV_ARGS)
+
+ep-dev-status: check-deps ## Check connectivity to the selected Kubernetes development environment
+	@uv run python execution-plane/tools/dev_cli.py status $(EP_DEV_ARGS)
+
+ep-dev-up: check-deps ## Create or start the local Kubernetes development environment
+	@uv run python execution-plane/tools/dev_cli.py up $(EP_DEV_ARGS)
+
+ep-dev-down: check-deps ## Stop or remove the local Kubernetes development environment
+	@uv run python execution-plane/tools/dev_cli.py down $(EP_DEV_ARGS)
+
+ep-dev-reset: check-deps ## Recreate the local Kubernetes development environment
+	@uv run python execution-plane/tools/dev_cli.py reset --yes $(EP_DEV_ARGS)
+
+ep-dev-connect: check-deps ## Validate access to the configured remote OpenShift environment
+	@uv run python execution-plane/tools/dev_cli.py --provider openshift connect $(EP_DEV_ARGS)
 
 
 # Database
@@ -621,7 +632,9 @@ OPENAPI_PUBLIC_SPEC ?= src/syntara/schemas/openapi-public.yaml
 OPENAPI_PUBLIC_SPEC_JSON ?= src/syntara/schemas/openapi-public.json
 OPENAPI_EP_SPEC ?= src/syntara/schemas/execution_plane/openapi.yaml
 OPENAPI_GENERATED_FILES = $(OPENAPI_SPEC) $(OPENAPI_PUBLIC_SPEC) $(OPENAPI_PUBLIC_SPEC_JSON) $(OPENAPI_EP_SPEC)
-OPENAPI_BASE_REF ?= devel
+# GitHub Actions provides the actual pull-request base branch. Fall back to
+# devel for local checks outside a pull-request context.
+OPENAPI_BASE_REF ?= $(if $(GITHUB_BASE_REF),$(GITHUB_BASE_REF),devel)
 VERBOSITY ?= -v
 
 .PHONY: api-spec-validation

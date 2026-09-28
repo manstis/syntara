@@ -48,6 +48,7 @@ def test_execution_target_belongs_to_cluster_with_default_and_draining_state() -
     assert table.name == "execution_targets"
     assert table.schema == EP_SCHEMA
     assert table.c.cluster_id.nullable is False
+    assert table.c.namespace.nullable is False
     assert table.constraints
     assert any(
         constraint.name == "execution_targets_cluster_name_key"
@@ -69,6 +70,7 @@ def test_execution_target_belongs_to_cluster_with_default_and_draining_state() -
             name="default",
             backend_type=BackendType.VANILLA_K8S,
             endpoint="https://target.example",
+            namespace="execution",
             api_key="secret",
         )
     )

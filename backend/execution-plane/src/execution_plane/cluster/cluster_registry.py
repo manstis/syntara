@@ -36,6 +36,7 @@ class DiscoveredExecutionTarget:
     endpoint: str
     api_key: str = field(repr=False)
     is_default: bool = False
+    namespace: str = "default"
 
 
 class DiscoveryState(StrEnum):
@@ -130,6 +131,7 @@ class ClusterRegistry:
                     name=target.name,
                     backend_type=target.backend_type,
                     endpoint=target.endpoint,
+                    namespace=target.namespace,
                     api_key=target.api_key,
                     is_default=target.is_default,
                     created_by=created_by,

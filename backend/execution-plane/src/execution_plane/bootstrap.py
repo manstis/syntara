@@ -21,6 +21,7 @@ LOCAL_CLUSTER_NAME = "local-execution-plane"
 LOCAL_CLUSTER_ENDPOINT = "local://execution-plane"
 LOCAL_TARGET_NAME = "local-default"
 LOCAL_TARGET_ENDPOINT = "local://execution-plane/default"
+LOCAL_TARGET_NAMESPACE = "execution"
 LOCAL_API_KEY = "local-execution-plane"
 BOOTSTRAP_ACTOR_ID = uuid.UUID(int=0)
 
@@ -44,6 +45,7 @@ class LocalDiscoveryMechanism:
                     name=LOCAL_TARGET_NAME,
                     backend_type=BackendType.VANILLA_K8S,
                     endpoint=LOCAL_TARGET_ENDPOINT,
+                    namespace=LOCAL_TARGET_NAMESPACE,
                     api_key=LOCAL_API_KEY,
                     is_default=True,
                 )
@@ -63,10 +65,13 @@ async def bootstrap_local_cluster(
     ):
         target_registry = ExecutionTargetRegistry(target_store)
         cluster_registry = ClusterRegistry(cluster_store, target_registry, discovery)
-        cluster = next(
-            (candidate for candidate in await cluster_registry.list() if candidate.endpoint == LOCAL_CLUSTER_ENDPOINT),
-            None,
-        )
+        clusters = await cluster_registry.list()
+        for candidate in clusters:
+            targets = await target_registry.list(cluster_id=candidate.id)
+            if _is_healthy(candidate, targets):
+                return candidate
+
+        cluster = next((candidate for candidate in clusters if candidate.endpoint == LOCAL_CLUSTER_ENDPOINT), None)
         if cluster is None:
             cluster = await cluster_registry.register(
                 LOCAL_CLUSTER_NAME,
@@ -92,6 +97,7 @@ async def bootstrap_local_cluster(
             name=target.name,
             backend_type=target.backend_type,
             endpoint=target.endpoint,
+            namespace=target.namespace,
             api_key=target.api_key,
             is_default=target.is_default,
             created_by=created_by,
@@ -106,7 +112,7 @@ async def bootstrap_local_cluster(
 
 
 def _is_healthy(cluster: Cluster, targets: list[ExecutionTarget]) -> bool:
-    """Return whether the local Cluster has one usable default target."""
+    """Return whether a Cluster has one usable default target."""
     defaults = [target for target in targets if target.is_default]
     return (
         cluster.enabled

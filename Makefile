@@ -1,6 +1,6 @@
 .PHONY: help install format lint test test-all typecheck dev gen-contracts \
        services-up services-down services-logs secrets db-migrate db-seed admin-password setup sync \
-       pre-commit-install
+       pre-commit-install check-openapi-breaking-pre-commit
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -91,6 +91,9 @@ admin-password: ## Sync bootstrap admin password from .secrets/admin-password in
 
 gen-contracts: ## Regenerate TypeScript types from backend OpenAPI specs
 	cd frontend/packages/syntara-contracts && npm run gen:local
+
+check-openapi-breaking-pre-commit: ## Check OpenAPI breaking changes against the pull-request base
+	$(MAKE) -C backend check-openapi-breaking-pre-commit
 
 # --- Standards checks (removed from pre-commit, run in CI) ---
 

@@ -19,6 +19,16 @@ def test_cluster_migration_is_next_revision_and_defines_cluster_table() -> None:
     assert "clusters" in migration.upgrade.__doc__
 
 
+def test_execution_target_namespace_migration_follows_cluster_migration() -> None:
+    """The namespace column is added after Cluster ownership exists."""
+    migration = importlib.import_module(
+        "execution_plane.migrations.versions.c8d9e0f1a2b3_add_execution_target_namespace"
+    )
+
+    assert migration.revision == "c8d9e0f1a2b3"
+    assert migration.down_revision == "b7c8d9e0f1a2"
+
+
 def test_cluster_migration_requires_an_empty_target_table_and_adds_target_constraints() -> None:
     """The green-field migration rejects existing targets and adds new invariants."""
     migration = importlib.import_module(
@@ -33,6 +43,28 @@ def test_cluster_migration_requires_an_empty_target_table_and_adds_target_constr
     assert '"uq_execution_targets_default_cluster"' in source
     assert 'postgresql_where=sa.text("is_default = true")' in source
     assert "must be empty" in source
+
+
+def test_namespace_migration_adds_required_string_column() -> None:
+    migration = importlib.import_module(
+        "execution_plane.migrations.versions.c8d9e0f1a2b3_add_execution_target_namespace"
+    )
+
+    with (
+        patch.object(migration.op, "add_column") as add_column,
+        patch.object(migration.op, "alter_column"),
+        patch.object(migration.op, "drop_column") as drop_column,
+    ):
+        migration.upgrade()
+        migration.downgrade()
+
+    add_column.assert_called_once()
+    assert add_column.call_args.args[0] == "execution_targets"
+    namespace_column = add_column.call_args.args[1]
+    assert namespace_column.name == "namespace"
+    assert namespace_column.nullable is False
+    assert isinstance(namespace_column.type, migration.sa.String)
+    drop_column.assert_called_once_with("execution_targets", "namespace", schema="execution_plane")
 
 
 def test_cluster_migration_upgrade_records_required_schema_operations() -> None:

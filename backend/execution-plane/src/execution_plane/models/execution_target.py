@@ -65,6 +65,7 @@ class ExecutionTarget(SQLModel, table=True):
         ),
     )
     endpoint: str
+    namespace: str = "default"
     status: TargetStatus = Field(
         default=TargetStatus.REGISTERING,
         sa_column=Column(

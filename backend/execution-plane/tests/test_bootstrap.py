@@ -140,6 +140,7 @@ async def test_bootstrap_is_idempotent_for_existing_cluster_and_target(
         cluster_id=cluster.id,
         name="local-default",
         endpoint="local://execution-plane/default",
+        namespace="execution",
         api_key="target-secret",
         backend_type=BackendType.VANILLA_K8S,
         is_default=True,
@@ -208,3 +209,41 @@ async def test_bootstrap_repairs_existing_cluster_without_target(monkeypatch: py
     assert cluster_store.state_calls == 1
     assert target_store.create_calls == 1
     assert target_store.activate_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_is_noop_for_non_local_cluster_with_healthy_default_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from execution_plane import bootstrap
+    from execution_plane.cluster.cluster_store import ClusterStore
+    from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
+
+    cluster = _cluster()
+    cluster.name = "remote-openshift"
+    cluster.endpoint = "https://api.example.com:6443"
+    cluster.status = ClusterStatus.ACTIVE
+    target = ExecutionTarget(
+        cluster_id=cluster.id,
+        name="remote-default",
+        endpoint=cluster.endpoint,
+        namespace="execution",
+        api_key="target-secret",
+        backend_type=BackendType.VANILLA_K8S,
+        is_default=True,
+        status=TargetStatus.ACTIVE,
+        created_by=uuid.uuid4(),
+        created_at=datetime.now(UTC),
+        updated_by=uuid.uuid4(),
+        updated_at=datetime.now(UTC),
+    )
+    cluster_store = _ClusterStore(cluster)
+    target_store = _ExecutionTargetStore([target])
+    monkeypatch.setattr(ClusterStore, "from_database_url", lambda _url: _StoreContext(cluster_store))
+    monkeypatch.setattr(ExecutionTargetStore, "from_database_url", lambda _url: _StoreContext(target_store))
+
+    result = await bootstrap.bootstrap_local_cluster("postgresql+asyncpg://localhost/syntara")
+
+    assert result.id == cluster.id
+    assert cluster_store.create_calls == 0
+    assert target_store.create_calls == 0

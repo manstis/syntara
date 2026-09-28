@@ -3,14 +3,37 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import shutil
 import subprocess
 import sys
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
+
+from execution_plane.cluster.cluster_registry import (
+    ClusterRegistration,
+    ClusterRegistry,
+    DiscoveredExecutionTarget,
+    DiscoveryResult,
+)
+from execution_plane.cluster.cluster_store import ClusterStore
+from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
+from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
+from execution_plane.models.cluster import Cluster, ClusterStatus
+from execution_plane.models.execution_target import BackendType
+from execution_plane.models.work_item import WorkItem
+from execution_plane.work_store import WorkStore
+from sqlalchemy import delete
+from sqlmodel import col
+
+DEFAULT_DATABASE_URL = "postgresql+asyncpg://admin:admin@localhost:5432/syntara_api"
+DEFAULT_LOCAL_NAMESPACE = "execution-plane"
+CLI_ACTOR_ID = uuid.UUID(int=0)
 
 
 class EnvironmentSelectionError(RuntimeError):
@@ -78,6 +101,70 @@ class CommandResult:
     stderr: str = ""
 
 
+@dataclass(frozen=True)
+class EnvironmentDetails:
+    """Connection details used to register a Kubernetes environment."""
+
+    provider: EnvironmentProvider
+    name: str
+    endpoint: str
+    namespace: str
+    api_key: str
+    labels: dict[str, str]
+
+
+def _find_registered_cluster(clusters: Sequence[Cluster], details: EnvironmentDetails) -> Cluster | None:
+    """Find a CLI registration by stable labels, falling back to endpoint."""
+    labeled = next(
+        (
+            candidate
+            for candidate in clusters
+            if candidate.labels.get("provider") == details.labels.get("provider")
+            and candidate.labels.get("cluster") == details.labels.get("cluster")
+        ),
+        None,
+    )
+    return labeled or next((candidate for candidate in clusters if candidate.endpoint == details.endpoint), None)
+
+
+def _require_active_registration(cluster: Cluster) -> Cluster:
+    """Reject a registration that completed with an error state."""
+    if cluster.status is not ClusterStatus.ACTIVE:
+        raise EnvironmentSelectionError(f"registration failed for Cluster '{cluster.name}'")
+    return cluster
+
+
+async def _refresh_registered_cluster(
+    cluster_store: ClusterStore, cluster: Cluster, details: EnvironmentDetails
+) -> None:
+    """Refresh CLI-owned connection details without expanding the store API."""
+    async with cluster_store._session_context() as session:  # noqa: SLF001
+        try:
+            persisted = await session.get(Cluster, cluster.id, with_for_update=True)
+            if persisted is None:
+                raise EnvironmentSelectionError(f"Cluster '{cluster.name}' no longer exists")
+            persisted.endpoint = details.endpoint
+            persisted.api_key = details.api_key
+            persisted.labels = details.labels
+            persisted.updated_by = CLI_ACTOR_ID
+            persisted.updated_at = datetime.now(UTC)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def _remove_target_work_items(work_store: WorkStore, target_id: uuid.UUID) -> None:
+    """Delete all WorkItems for a target during a local CLI shutdown."""
+    async with work_store._session_context() as session:  # noqa: SLF001
+        try:
+            await session.execute(delete(WorkItem).where(col(WorkItem.execution_target_id) == target_id))
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
 class CommandRunner(Protocol):
     """Run an external command without invoking a shell."""
 
@@ -118,7 +205,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Environment provider: auto, kind, minikube, or openshift.",
     )
     parser.add_argument("--cluster", default=os.environ.get("EP_DEV_CLUSTER", "execution-plane"))
-    parser.add_argument("--namespace", default=os.environ.get("EP_DEV_NAMESPACE", "execution-plane"))
+    parser.add_argument("--namespace", default=os.environ.get("EP_DEV_NAMESPACE"))
     parser.add_argument("--context", default=os.environ.get("EP_DEV_CONTEXT"))
     parser.add_argument("command", choices=["doctor", "status", "up", "down", "reset", "connect"])
     parser.add_argument("--yes", action="store_true", help="Confirm destructive local reset operations.")
@@ -141,6 +228,240 @@ def _run_openshift_check(runner: CommandRunner, context: str | None, namespace: 
     context_args = _context_args(context)
     _run_command(runner, ["oc", "whoami", *context_args])
     _run_command(runner, ["oc", "get", "project", namespace, *context_args])
+
+
+def _require_output(result: CommandResult, description: str) -> str:
+    """Return command output or reject an unusable connection detail."""
+    value = result.stdout.strip()
+    if not value:
+        raise EnvironmentSelectionError(f"{description} returned no value")
+    return value
+
+
+def _collect_openshift_details(
+    runner: CommandRunner, cluster: str, context: str | None, namespace: str
+) -> EnvironmentDetails:
+    """Collect the OpenShift API endpoint and current bearer token."""
+    context_args = _context_args(context)
+    endpoint = _require_output(
+        _run_command(runner, ["oc", "whoami", "--show-server", *context_args]),
+        "oc whoami --show-server",
+    )
+    api_key = _require_output(
+        _run_command(runner, ["oc", "whoami", "--show-token", *context_args]),
+        "oc whoami --show-token",
+    )
+    labels = {"provider": EnvironmentProvider.OPENSHIFT.value, "cluster": cluster}
+    if context:
+        labels["context"] = context
+    return EnvironmentDetails(EnvironmentProvider.OPENSHIFT, cluster, endpoint, namespace, api_key, labels)
+
+
+def _ensure_local_namespace(runner: CommandRunner, namespace: str, context: str | None) -> None:
+    """Create a local Kubernetes namespace when it is not present."""
+    context_args = _context_args(context)
+    result = runner.run(["kubectl", "get", "namespace", namespace, *context_args])
+    if result.returncode:
+        _run_command(runner, ["kubectl", "create", "namespace", namespace, *context_args])
+
+
+def _collect_local_details(
+    runner: CommandRunner,
+    provider: EnvironmentProvider,
+    cluster: str,
+    namespace: str,
+    context: str | None,
+) -> EnvironmentDetails:
+    """Collect the active kubeconfig endpoint and preserve its credentials."""
+    _ensure_local_namespace(runner, namespace, context)
+    context_args = _context_args(context)
+    endpoint = _require_output(
+        _run_command(
+            runner,
+            [
+                "kubectl",
+                "config",
+                "view",
+                "--minify",
+                "--raw",
+                *context_args,
+                "-o",
+                "jsonpath={.clusters[0].cluster.server}",
+            ],
+        ),
+        "kubectl config endpoint lookup",
+    )
+    kubeconfig = _require_output(
+        _run_command(runner, ["kubectl", "config", "view", "--minify", "--raw", *context_args]),
+        "kubectl config credential lookup",
+    )
+    labels = {"provider": provider.value, "cluster": cluster}
+    if context:
+        labels["context"] = context
+    return EnvironmentDetails(provider, cluster, endpoint, namespace, kubeconfig, labels)
+
+
+class _CliDiscoveryMechanism:
+    """Represent one CLI-selected namespace as the cluster's default target."""
+
+    def __init__(self, details: EnvironmentDetails) -> None:
+        self._details = details
+
+    def discover(self, registration: ClusterRegistration) -> DiscoveryResult:
+        """Return the selected namespace as a default target."""
+        return DiscoveryResult.discovered(
+            [
+                DiscoveredExecutionTarget(
+                    name=f"{registration.name}-default",
+                    backend_type=BackendType.VANILLA_K8S,
+                    endpoint=registration.endpoint,
+                    namespace=self._details.namespace,
+                    api_key=self._details.api_key,
+                    is_default=True,
+                )
+            ]
+        )
+
+
+async def _register_environment_record(details: EnvironmentDetails, database_url: str) -> None:
+    """Create or reuse the Cluster and its protected default target."""
+    async with (
+        ClusterStore.from_database_url(database_url) as cluster_store,
+        ExecutionTargetStore.from_database_url(database_url) as target_store,
+    ):
+        target_registry = ExecutionTargetRegistry(target_store)
+        cluster_registry = ClusterRegistry(cluster_store, target_registry, _CliDiscoveryMechanism(details))
+        cluster = _find_registered_cluster(await cluster_registry.list(), details)
+        if cluster is None:
+            registered = await cluster_registry.register(
+                details.name,
+                details.endpoint,
+                details.api_key,
+                CLI_ACTOR_ID,
+                details.labels,
+            )
+            _require_active_registration(registered)
+            return
+
+        await _refresh_registered_cluster(cluster_store, cluster, details)
+
+        targets = await target_registry.list(cluster_id=cluster.id)
+        default_target = next((target for target in targets if target.is_default), None)
+        if default_target is not None:
+            if default_target.namespace != details.namespace:
+                raise EnvironmentSelectionError(
+                    f"Cluster '{cluster.name}' already has default namespace '{default_target.namespace}'"
+                )
+            await target_registry.update(
+                default_target.id,
+                updated_by=CLI_ACTOR_ID,
+                endpoint=details.endpoint,
+                api_key=details.api_key,
+            )
+            return
+        if not cluster.enabled or cluster.status not in {ClusterStatus.ACTIVE, ClusterStatus.REGISTERING}:
+            raise EnvironmentSelectionError(f"Cluster '{cluster.name}' is not available for target registration")
+
+        target = await target_registry.create(
+            cluster_id=cluster.id,
+            name=f"{details.name}-default",
+            backend_type=BackendType.VANILLA_K8S,
+            endpoint=details.endpoint,
+            namespace=details.namespace,
+            api_key=details.api_key,
+            is_default=True,
+            created_by=CLI_ACTOR_ID,
+            labels={},
+        )
+        await target_registry.activate(target.id, CLI_ACTOR_ID)
+        if cluster.status is ClusterStatus.REGISTERING:
+            await cluster_store.record_discovery_state(cluster.id, ClusterStatus.ACTIVE, None, CLI_ACTOR_ID)
+
+
+async def _remove_environment_record(provider: EnvironmentProvider, cluster_name: str, database_url: str) -> None:
+    """Remove the local CLI registration matching the selected provider and cluster."""
+    async with (
+        ClusterStore.from_database_url(database_url) as cluster_store,
+        ExecutionTargetStore.from_database_url(database_url) as target_store,
+        WorkStore.from_database_url(database_url) as work_store,
+    ):
+        cluster = next(
+            (
+                candidate
+                for candidate in await cluster_store.list()
+                if candidate.name == cluster_name
+                and candidate.labels.get("provider") == provider.value
+                and candidate.labels.get("cluster") == cluster_name
+            ),
+            None,
+        )
+        if cluster is not None:
+            await cluster_store.request_delete(cluster.id, CLI_ACTOR_ID)
+            for target in await target_store.list(cluster_id=cluster.id):
+                await _remove_target_work_items(work_store, target.id)
+                await target_store.finalize_delete(target.id)
+            await cluster_store.finalize_delete(cluster.id)
+            if await cluster_store.get(cluster.id) is not None:
+                raise EnvironmentSelectionError(f"Cluster '{cluster.name}' could not be removed")
+
+
+def _register_environment(
+    *,
+    provider: EnvironmentProvider,
+    cluster: str,
+    namespace: str,
+    context: str | None,
+    runner: CommandRunner,
+) -> None:
+    """Resolve provider credentials and persist the selected environment."""
+    if provider is EnvironmentProvider.OPENSHIFT:
+        details = _collect_openshift_details(runner, cluster, context, namespace)
+    else:
+        if not shutil.which("kubectl"):
+            raise EnvironmentSelectionError("kubectl is not available; install kubectl")
+        details = _collect_local_details(runner, provider, cluster, namespace, context)
+    database_url = os.environ.get("APP_DATABASE_URL") or os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
+    try:
+        asyncio.run(_register_environment_record(details, database_url))
+    except EnvironmentSelectionError:
+        raise
+    except Exception as exc:
+        raise EnvironmentSelectionError(f"failed to register the {provider.value} environment: {exc}") from exc
+
+
+def _remove_environment(*, provider: EnvironmentProvider, cluster: str) -> None:
+    """Remove a local CLI registration from the development database."""
+    database_url = os.environ.get("APP_DATABASE_URL") or os.environ.get("DATABASE_URL") or DEFAULT_DATABASE_URL
+    try:
+        asyncio.run(_remove_environment_record(provider, cluster, database_url))
+    except Exception as exc:
+        raise EnvironmentSelectionError(f"failed to remove the {provider.value} environment: {exc}") from exc
+
+
+def _run_local_environment(
+    provider: EnvironmentProvider,
+    command: str,
+    cluster: str,
+    namespace: str,
+    context: str | None,
+    confirmed: bool,
+    runner: CommandRunner,
+) -> None:
+    """Run a local provider lifecycle command and synchronize its registration."""
+    if command == "connect":
+        raise EnvironmentSelectionError("connect is only supported for remote OpenShift; use 'status' locally")
+    print(f"Local Kubernetes provider selected: {provider.value}")
+    _run_local_command(runner, provider, command, cluster, confirmed)
+    if command in {"up", "reset"}:
+        _register_environment(
+            provider=provider,
+            cluster=cluster,
+            namespace=namespace,
+            context=context,
+            runner=runner,
+        )
+    elif command == "down":
+        _remove_environment(provider=provider, cluster=cluster)
 
 
 def _run_kind_command(runner: CommandRunner, command: str, cluster: str) -> None:
@@ -198,6 +519,8 @@ def main(
     try:
         environment = select_provider(selected, local)
         if environment is OpenShiftEnvironment:
+            if not args.namespace:
+                raise EnvironmentSelectionError("OpenShift requires --namespace or EP_DEV_NAMESPACE")
             if args.command in {"up", "down", "reset"}:
                 environment.ensure_lifecycle_operation_allowed(args.command)
             if not executable_exists("oc"):
@@ -205,12 +528,18 @@ def main(
             if args.command in {"connect", "doctor", "status"}:
                 _run_openshift_check(command_runner, args.context, args.namespace)
                 print(f"Remote OpenShift is reachable in namespace {args.namespace}.")
+                if args.command == "connect":
+                    _register_environment(
+                        provider=EnvironmentProvider.OPENSHIFT,
+                        cluster=args.cluster,
+                        namespace=args.namespace,
+                        context=args.context,
+                        runner=command_runner,
+                    )
             return 0
         provider = EnvironmentProvider(selected) if selected != EnvironmentProvider.AUTO else local[0]
-        if args.command == "connect":
-            raise EnvironmentSelectionError("connect is only supported for remote OpenShift; use 'status' locally")
-        print(f"Local Kubernetes provider selected: {provider.value}")
-        _run_local_command(command_runner, provider, args.command, args.cluster, args.yes)
+        namespace = args.namespace or DEFAULT_LOCAL_NAMESPACE
+        _run_local_environment(provider, args.command, args.cluster, namespace, args.context, args.yes, command_runner)
         return 0
     except EnvironmentSelectionError as exc:
         print(f"Error: {exc}", file=sys.stderr)

@@ -102,6 +102,10 @@ components:
         endpoint:
           type: string
           title: Endpoint
+        namespace:
+          type: string
+          title: Namespace
+          default: default
         status:
           $ref: '#/components/schemas/TargetStatus'
           default: registering

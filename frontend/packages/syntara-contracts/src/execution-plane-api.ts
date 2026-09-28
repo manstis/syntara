@@ -74,6 +74,11 @@ export interface components {
       backend_type: components['schemas']['BackendType']
       /** Endpoint */
       endpoint: string
+      /**
+       * Namespace
+       * @default default
+       */
+      namespace?: string
       /** @default registering */
       status?: components['schemas']['TargetStatus']
       /**

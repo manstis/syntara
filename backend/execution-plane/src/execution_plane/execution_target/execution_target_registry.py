@@ -34,10 +34,19 @@ class ExecutionTargetRegistry:
         is_default: bool,  # noqa: FBT001
         created_by: uuid.UUID,
         labels: dict[str, Any] | None = None,
+        namespace: str = "default",
     ) -> ExecutionTarget:
         """Create an execution target through the persistence boundary."""
         return await self._store.create(
-            cluster_id, name, backend_type, endpoint, api_key, is_default, created_by, labels
+            cluster_id,
+            name,
+            backend_type,
+            endpoint,
+            api_key,
+            is_default,
+            created_by,
+            labels=labels,
+            namespace=namespace,
         )
 
     async def get(self, target_id: uuid.UUID) -> ExecutionTarget | None:

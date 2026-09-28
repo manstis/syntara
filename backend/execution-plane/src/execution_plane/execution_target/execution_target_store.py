@@ -61,6 +61,7 @@ class ExecutionTargetStore(StoreBase):
         is_default: bool,  # noqa: FBT001
         created_by: uuid.UUID,
         labels: dict[str, Any] | None = None,
+        namespace: str = "default",
     ) -> ExecutionTarget:
         """Create a target, rejecting a second default in the same cluster."""
         now = datetime.now(UTC)
@@ -69,6 +70,7 @@ class ExecutionTargetStore(StoreBase):
             name=name,
             backend_type=backend_type,
             endpoint=endpoint,
+            namespace=namespace,
             api_key=api_key,
             is_default=is_default,
             labels=labels or {},
