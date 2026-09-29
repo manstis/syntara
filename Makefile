@@ -1,3 +1,5 @@
+SHELL := /bin/bash
+
 .PHONY: help install format lint test test-all typecheck dev gen-contracts \
        services-up services-down services-logs secrets db-migrate db-seed admin-password setup sync \
        pre-commit-install check-openapi-breaking-pre-commit
@@ -17,15 +19,38 @@ pre-commit-install: ## Install pre-commit hooks
 	uv run pre-commit install
 	uv run pre-commit install --hook-type commit-msg
 
-dev: ## Start backend API, Temporal workers, and frontend dev servers
-	$(MAKE) -C backend dev &
-	$(MAKE) -C backend worker-run &
-	$(MAKE) -C backend background-worker-run &
+dev: ## Set up the local EP cluster, then start the API, workers, and frontend dev server
+	@pids=""; \
+	run_backend_target() { \
+		target="$$1"; \
+		trap 'kill -TERM "$$child" 2>/dev/null || true; wait "$$child" 2>/dev/null || true; exit 0' INT TERM; \
+		$(MAKE) -C backend "$$target" 2> >(sed -E '/^make\[[0-9]+\]: \*\*\* \[Makefile:[0-9]+: (dev|worker-run|background-worker-run|ep-worker-run)\] Error (130|143)$$/d' >&2) & \
+		child=$$!; \
+		wait "$$child"; \
+		status=$$?; \
+		trap - INT TERM; \
+		return "$$status"; \
+	}; \
+	cleanup() { \
+		status=$${1:-$$?}; \
+		trap - INT TERM EXIT; \
+		for pid in $$pids; do kill -TERM "$$pid" 2>/dev/null || true; done; \
+		wait 2>/dev/null || true; \
+		exit $$status; \
+	}; \
+	trap 'cleanup 0' INT TERM; \
+	trap cleanup EXIT; \
+	$(MAKE) -C backend ep-dev-up || exit $$?; \
+	run_backend_target dev & pids="$$pids $$!"; \
+	run_backend_target worker-run & pids="$$pids $$!"; \
+	run_backend_target background-worker-run & pids="$$pids $$!"; \
+	run_backend_target ep-worker-run & pids="$$pids $$!"; \
 	cd frontend && VITE_API_URL=https://localhost:8000 npm run start
 
-setup: _ensure-env install secrets certs build-images services-up db-migrate db-seed admin-password ## One-shot bootstrap: install, secrets, certs, services, migrations, seed
+
+setup: _ensure-env install secrets certs build-images services-up db-migrate db-seed admin-password ## One-shot bootstrap: install, secrets, certs, services, migrations, and seed data
 	@echo ""
-	@echo "Setup complete. Run 'make dev' to start the development servers."
+	@echo "Setup complete. Run 'make dev' for host-based EP development or 'make -C backend run-all' for the containerized EP worker."
 
 _ensure-env:
 	@if [ ! -f backend/.env ]; then \
@@ -80,6 +105,7 @@ build-images: ## Build container images
 
 db-migrate: ## Run database migrations
 	cd backend && APP_ADMIN_PASSWORD_PATH=.secrets/admin-password uv run alembic upgrade head
+	$(MAKE) -C backend ep-migrate
 
 db-seed: ## Seed the database with required data
 	$(MAKE) -C backend db-seed

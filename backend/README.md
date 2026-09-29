@@ -117,7 +117,8 @@ make build-images
 ```
 
 ```bash
-# Start all services (API, UI, Database, Temporal, Worker)
+# Start the full stack, including the registered local EP cluster and the
+# containerized Execution Plane worker
 make run-all
 ```
 
@@ -126,13 +127,15 @@ make run-all
 # Install dependencies and setup project
 make install
 
-# Start the database (Terminal 1)
+# Start PostgreSQL, Redis, and Temporal in separate terminals.
 make db-run
-
-# Start the cache/Redis (Terminal 2 — required for authentication)
 make cache-run
+make temporal-run
 
-# Start the development server (Terminal 3)
+# Create/register a local Kind/Minikube cluster, then start the API.
+# (The root `make dev` combines cluster setup with the API, frontend, and
+# standalone EP worker.)
+make ep-dev-up
 make dev
 
 # Run tests
@@ -143,6 +146,163 @@ make lint
 ```
 
 > **Note:** The API server requires Redis (`make cache-run`) for authentication and streaming. Authorization is evaluated in-process via regopy from `src/syntara/authz/rego/authz.rego`.
+
+### Execution Plane development
+
+The Execution Plane development workflow uses the `dev_cli.py` tool through the
+`ep-dev-*` Make targets. It supports local Kind and Minikube clusters, or a
+remote OpenShift cluster. The cluster targets create or register the selected
+environment; they do not start an EP worker.
+
+The worker is started by the selected application startup path: the root
+`make dev` starts one standalone host worker, while `make run-all` starts the
+containerized `execution-plane-worker` service.
+
+#### Prerequisites
+
+For a local cluster, install:
+
+- `kubectl`
+- either [Kind](https://kind.sigs.k8s.io/) or [Minikube](https://minikube.sigs.k8s.io/)
+
+For OpenShift, install `oc` and log in to the cluster before connecting.
+
+For the host-based EP workflow, start PostgreSQL, Redis, and Temporal in
+separate terminals before starting the API:
+
+```bash
+make install
+make db-run
+make cache-run
+make temporal-run
+```
+
+The usual local workflow is then:
+
+```bash
+# Create/register the local cluster. This target does not start a worker.
+# It automatically selects the only installed provider, or fails if both
+# Kind and Minikube are installed and --provider is not specified.
+make ep-dev-up
+
+# Start the API, run migrations and seed data, and start one host EP worker.
+make dev
+```
+
+Select a provider explicitly when needed:
+
+```bash
+# Kind
+make ep-dev-up EP_DEV_ARGS="--provider kind --cluster execution-plane"
+
+# Minikube
+make ep-dev-up EP_DEV_ARGS="--provider minikube --cluster execution-plane"
+
+# Remote OpenShift; --namespace is required.
+make ep-dev-connect EP_DEV_ARGS="--context my-dev --namespace execution-plane"
+```
+
+The provider, cluster, namespace, and kubeconfig context can also be supplied
+through `EP_DEV_PROVIDER`, `EP_DEV_CLUSTER`, `EP_DEV_NAMESPACE`, and
+`EP_DEV_CONTEXT`. The default local cluster and namespace are both named
+`execution-plane`.
+
+#### Loading workload images into a local cluster
+
+Images used by Pods in a local Kind or Minikube cluster must be loaded into
+that cluster's node image store. Building an image locally is not sufficient:
+the cluster runtime cannot automatically use an image that exists only in the
+host's container runtime.
+
+Set `WORKLOAD_IMAGE` to the arbitrary image you want Pods to run. The image may
+be built locally or pulled into the host's Docker/Podman image store first:
+
+```bash
+WORKLOAD_IMAGE=example/workload:dev
+
+# Example local build; use any image build or pull workflow appropriate to
+# your workload instead.
+podman build -t "$WORKLOAD_IMAGE" path/to/workload
+```
+
+For Kind, load the image into the `execution-plane` cluster:
+
+```bash
+# If the image is available to Docker:
+kind load docker-image "$WORKLOAD_IMAGE" --name execution-plane
+
+# If the image is in Podman, export it and load the archive:
+podman save --format docker-archive -o /tmp/workload-image.tar "$WORKLOAD_IMAGE"
+kind load image-archive /tmp/workload-image.tar --name execution-plane
+```
+
+For Minikube, load the image into the `execution-plane` profile:
+
+```bash
+# If the image is available directly to the local Minikube runtime:
+minikube image load "$WORKLOAD_IMAGE" --profile execution-plane
+```
+
+If the local runtime cannot resolve the image by name, export an archive with
+Docker or Podman and load that instead:
+
+```bash
+podman save --format docker-archive -o /tmp/workload-image.tar "$WORKLOAD_IMAGE"
+# Or: docker save -o /tmp/workload-image.tar "$WORKLOAD_IMAGE"
+minikube image load /tmp/workload-image.tar --profile execution-plane
+```
+
+Reference the same image name in the Pod and prevent Kubernetes from trying to
+pull it from a registry:
+
+```yaml
+containers:
+  - name: workload
+    image: example/workload:dev
+    imagePullPolicy: IfNotPresent
+```
+
+Repeat the image-load command after rebuilding an image. Loading an updated
+image with the same tag does not automatically restart existing Pods; delete
+or recreate those Pods when you need them to use the new image. The image must
+be loaded after `make ep-dev-up` creates or recreates the local cluster.
+
+#### Make targets
+
+Available lifecycle targets:
+
+| Target | Description |
+| --- | --- |
+| `make ep-dev-doctor` | Check that the selected cluster or OpenShift namespace is reachable |
+| `make ep-dev-status` | Check the selected environment and its connectivity |
+| `make ep-dev-up` | Create/start a local cluster and register it |
+| `make ep-dev-connect` | Validate and register an OpenShift environment |
+| `make ep-dev-reset` | Recreate the local cluster and register it |
+| `make ep-dev-down` | Remove the local cluster registration and stop the local cluster |
+
+Pass additional CLI options through `EP_DEV_ARGS`, for example:
+
+```bash
+make ep-dev-status EP_DEV_ARGS="--provider kind --cluster execution-plane"
+make ep-dev-reset EP_DEV_ARGS="--provider minikube --cluster execution-plane"
+```
+
+The root `make dev` runs `ep-dev-up` first, then starts the API, Temporal
+workers, frontend, and one standalone host EP worker. The backend `make dev`
+target only starts the backend API; prepare the cluster separately with
+`make ep-dev-up` when using backend targets directly.
+
+`make setup` starts supporting infrastructure, applies migrations, and seeds
+the database, but does not create the EP cluster or start an EP worker. Use the
+root `make dev` for the host-worker workflow, or use `make -C backend run-all`
+for the containerized workflow. `run-all` registers the local cluster before
+starting the compose `execution-plane-worker` service. `make services-run`
+starts supporting services only; it does not create the EP cluster or start an
+EP worker.
+
+If both Kind and Minikube are installed, specify `--provider`. If registration
+fails, verify that the database is running, `make ep-migrate` has completed,
+and that `kubectl`/`oc` is authenticated to the intended environment.
 
 ### Execution-plane CI coverage
 
@@ -227,7 +387,7 @@ make temporal-run
 # Press Ctrl+C to stop
 ```
 
-**Start all services** (database + temporal + temporal UI + worker in background - recommended):
+**Start infrastructure services** (database + cache + Temporal + Syntara workers in background):
 ```bash
 make services-run
 # View logs: make services-logs
@@ -285,6 +445,7 @@ The `podman-compose.yml` defines the following services:
 | **temporal** | Temporal workflow engine | 7233 | `temporalio/auto-setup:1.25.1` |
 | **temporal-ui** | Temporal web UI (dev only) | 8081 | `temporalio/ui:2.31.2` |
 | **temporal-worker** | Temporal workflow worker | - | Built from `containers/syntara/Containerfile` |
+| **execution-plane-worker** | Execution Plane task worker | - | Built from `containers/execution-plane/Containerfile` |
 | **syntara** | Syntara API service | 8000 | Built from `containers/syntara/Containerfile` |
 | **syntara-ui** | Syntara web interface | 8080 | Built from `../frontend/packages/syntara-ui/Containerfile` |
 
@@ -298,6 +459,10 @@ make build-images
 **Start all services** (foreground):
 ```bash
 make run-all
+# This expects the database and supporting services to be available, runs
+# migrations and seed data, creates/registers the local Kind or Minikube
+# cluster, and starts the containerized Execution Plane worker with the full
+# stack.
 # Access:
 # - API: http://localhost:8000
 # - UI: http://localhost:8080
@@ -307,7 +472,7 @@ make run-all
 
 **Start all services** (background):
 ```bash
-make services-run         # Start all services
+make services-run         # Start infrastructure services only
 make services-logs        # View logs from all services
 make services-stop        # Stop all services
 make services-clean       # Stop and remove all data (destructive)

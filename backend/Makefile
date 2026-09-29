@@ -241,14 +241,6 @@ endif
 
 # Development workflow
 # ========================================================
-.PHONY: ep-migrate
-ep-migrate: check-deps ## Apply execution_plane schema migrations (separate from main Syntara migrations)
-	@echo "🔄 Running execution_plane migrations..."
-	@cd execution-plane && \
-		DATABASE_URL=$${DATABASE_URL:-$${APP_DATABASE_URL:-postgresql+asyncpg://admin:admin@localhost:5432/syntara_api}} \
-		APP_ADMIN_PASSWORD_PATH=../.secrets/admin-password \
-		uv run alembic upgrade head
-	@echo "✅ execution_plane migrations complete"
 
 .PHONY: db-seed
 db-seed: check-deps ## Run all required database seeders
@@ -270,10 +262,11 @@ db-seed-all: check-deps ## Run all database seeders including dev samples
 
 .PHONY: dev
 dev: check-deps _ensure-secrets _ensure-certs ## Run development server with auto-reload
-	@echo "🔄 Running database migrations..."
+	@echo "🔄 Running database migrations and seed data..."
 	@APP_ADMIN_PASSWORD_PATH=.secrets/admin-password uv run alembic upgrade head
 	@$(MAKE) ep-migrate
 	@$(MAKE) db-seed
+	@$(MAKE) admin-password
 	@echo "✅ Migrations and seeding complete"
 	@echo "🪣 Ensuring S3 bucket exists on moto..."
 	@uv run python -c "\
@@ -307,7 +300,6 @@ dev: check-deps _ensure-secrets _ensure-certs ## Run development server with aut
 	APP_S3_USE_PATH_STYLE=$${APP_S3_USE_PATH_STYLE:-true} \
 	uv run python -m syntara.api.main
 
-
 .PHONY: worker-run
 worker-run: check-deps _ensure-secrets _ensure-certs ## Run Temporal workflow worker
 	@echo "🔄 Starting Temporal workflow worker..."
@@ -322,20 +314,6 @@ worker-run: check-deps _ensure-secrets _ensure-certs ## Run Temporal workflow wo
 	APP_APPROVALS_API_BASE_URL=$(WORKER_BASE_URL) \
 	APP_TOOL_MANAGER_BASE_URL=$(WORKER_BASE_URL) \
 	uv run python -m syntara.workflows.worker
-
-.PHONY: ep-worker-run
-# NOTE: uv run uses the shared workspace venv (syntara is importable but never imported by
-# the EP worker). For true package-level isolation use the container image built from
-# containers/execution-plane/Containerfile, which installs only execution-plane and its deps.
-ep-worker-run: check-deps _ensure-secrets _ensure-certs ## Run execution plane TE worker (polls work_items and completes Temporal activities)
-	@echo "🔄 Starting Execution Plane worker..."
-	APP_DATABASE_URL=$${APP_DATABASE_URL:-postgresql+asyncpg://admin:admin@localhost:5432/syntara_api} \
-	APP_TEMPORAL_ADDRESS=$${APP_TEMPORAL_ADDRESS:-localhost:7233} \
-	APP_TEMPORAL_NAMESPACE=$${APP_TEMPORAL_NAMESPACE:-default} \
-	$(S2S_TLS_VARS) \
-	APP_S2S_TLS_CERT_PATH=.secrets/certs/worker.crt \
-	APP_S2S_TLS_KEY_PATH=.secrets/certs/worker.key \
-	uv run python -m execution_plane.worker
 
 .PHONY: background-worker-run
 background-worker-run: check-deps _ensure-secrets _ensure-certs ## Run Temporal workflow background worker
@@ -352,6 +330,31 @@ background-worker-run: check-deps _ensure-secrets _ensure-certs ## Run Temporal 
 	APP_TOOL_MANAGER_BASE_URL=$(WORKER_BASE_URL) \
 	uv run python -m syntara.workflows.background_worker
 
+# Execution Plane worker
+# ========================================================
+
+.PHONY: ep-migrate
+ep-migrate: check-deps ## Apply execution_plane schema migrations (separate from main Syntara migrations)
+	@echo "🔄 Running execution_plane migrations..."
+	@cd execution-plane && \
+		DATABASE_URL=$${DATABASE_URL:-$${APP_DATABASE_URL:-postgresql+asyncpg://admin:admin@localhost:5432/syntara_api}} \
+		APP_ADMIN_PASSWORD_PATH=../.secrets/admin-password \
+		uv run alembic upgrade head
+	@echo "✅ execution_plane migrations complete"
+
+.PHONY: ep-worker-run
+# NOTE: uv run uses the shared workspace venv (syntara is importable but never imported by
+# the EP worker). For true package-level isolation use the container image built from
+# containers/execution-plane/Containerfile, which installs only execution-plane and its deps.
+ep-worker-run: check-deps _ensure-secrets _ensure-certs ## Run the standalone Execution Plane worker in the foreground
+	@echo "🔄 Starting Execution Plane worker..."
+	APP_DATABASE_URL=$${APP_DATABASE_URL:-postgresql+asyncpg://admin:admin@localhost:5432/syntara_api} \
+	APP_TEMPORAL_ADDRESS=$${APP_TEMPORAL_ADDRESS:-localhost:7233} \
+	APP_TEMPORAL_NAMESPACE=$${APP_TEMPORAL_NAMESPACE:-default} \
+	$(S2S_TLS_VARS) \
+	APP_S2S_TLS_CERT_PATH=.secrets/certs/worker.crt \
+	APP_S2S_TLS_KEY_PATH=.secrets/certs/worker.key \
+	uv run python -m execution_plane.worker
 
 # Execution Plane CLI tool
 # ========================================================
@@ -367,7 +370,7 @@ ep-dev-doctor: check-deps ## Check the selected Kubernetes development environme
 ep-dev-status: check-deps ## Check connectivity to the selected Kubernetes development environment
 	@uv run python execution-plane/tools/dev_cli.py status $(EP_DEV_ARGS)
 
-ep-dev-up: check-deps ## Create or start the local Kubernetes development environment
+ep-dev-up: check-deps ## Create/start and register the local Execution Plane Kubernetes cluster
 	@uv run python execution-plane/tools/dev_cli.py up $(EP_DEV_ARGS)
 
 ep-dev-down: check-deps ## Stop or remove the local Kubernetes development environment
@@ -378,7 +381,6 @@ ep-dev-reset: check-deps ## Recreate the local Kubernetes development environmen
 
 ep-dev-connect: check-deps ## Validate access to the configured remote OpenShift environment
 	@uv run python execution-plane/tools/dev_cli.py --provider openshift connect $(EP_DEV_ARGS)
-
 
 # Database
 # ========================================================
@@ -503,7 +505,15 @@ _ensure-secrets:
 	fi
 
 .PHONY: run-all
-run-all: _ensure-secrets _ensure-certs ## Start all services (foreground, Ctrl+C to stop)
+run-all: _ensure-secrets _ensure-certs ## Register the local EP cluster and start the full stack with a containerized EP worker
+	@echo "🔄 Running database migrations and seed data..."
+	@APP_ADMIN_PASSWORD_PATH=.secrets/admin-password uv run alembic upgrade head
+	@$(MAKE) ep-migrate
+	@$(MAKE) db-seed
+	@$(MAKE) admin-password
+	@echo "✅ Migrations and seeding complete"
+	@$(MAKE) ep-dev-up
+	@echo "✅ Local Execution Plane cluster registered"
 	@echo "🚀 Starting all services..."
 	@echo "📍 Syntara API: http://localhost:$${APP_API_PORT:-8000}"
 	@echo "📍 Syntara UI: http://localhost:$${APP_UI_PORT:-8080}"
@@ -517,8 +527,8 @@ run-all: _ensure-secrets _ensure-certs ## Start all services (foreground, Ctrl+C
 	$(COMPOSE_FINAL_CMD) up --build --force-recreate
 
 .PHONY: services-run
-services-run: _ensure-secrets _ensure-certs ## Start all services (database + cache + temporal + UI + worker + background-worker + MCP) in background
-	@echo "🚀 Starting all services (database + cache + temporal + UI + worker + background-worker + MCP)..."
+services-run: _ensure-secrets _ensure-certs ## Start infrastructure services (database + cache + temporal + Syntara workers + MCP) in background
+	@echo "🚀 Starting infrastructure services (database + cache + temporal + Syntara workers + MCP)..."
 	@echo "📍 Database: postgresql://admin:admin@localhost:$${APP_DB_PORT:-5432}/syntara_api"
 	@echo "📍 Cache: cache://localhost:$${APP_CACHE_PORT:-6379}"
 	@echo "📍 Temporal Server: localhost:$${APP_TEMPORAL_PORT:-7233}"
