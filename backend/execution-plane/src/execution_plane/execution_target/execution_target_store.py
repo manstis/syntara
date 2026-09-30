@@ -17,6 +17,8 @@ from execution_plane.store_base import StoreBase
 if TYPE_CHECKING:
     import uuid
 
+    from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
+
 
 class ExecutionTargetNotFoundError(LookupError):
     """Raised when a lifecycle transition targets an unknown execution target."""
@@ -59,8 +61,8 @@ class ExecutionTargetStore(StoreBase):
         api_key: str,
         is_default: bool,  # noqa: FBT001
         created_by: uuid.UUID,
+        placement: ExecutionTargetPlacement,
         labels: dict[str, str] | None = None,
-        namespace: str = "default",
     ) -> ExecutionTarget:
         """Create a target, rejecting a second default in the same cluster."""
         now = datetime.now(UTC)
@@ -69,7 +71,7 @@ class ExecutionTargetStore(StoreBase):
             name=name,
             backend_type=backend_type,
             endpoint=endpoint,
-            namespace=namespace,
+            placement=placement,
             api_key=api_key,
             is_default=is_default,
             labels=labels or {},
@@ -183,7 +185,7 @@ class ExecutionTargetStore(StoreBase):
         updated_by: uuid.UUID,
         name: str | None = None,
         endpoint: str | None = None,
-        namespace: str | None = None,
+        placement: ExecutionTargetPlacement,
         labels: dict[str, str] | None = None,
         status_message: str | None = None,
         api_key: str | None = None,
@@ -198,8 +200,7 @@ class ExecutionTargetStore(StoreBase):
                     target.name = name
                 if endpoint is not None:
                     target.endpoint = endpoint
-                if namespace is not None:
-                    target.namespace = namespace
+                target.placement = placement
                 if labels is not None:
                     target.labels = labels
                 if status_message is not None:
@@ -221,7 +222,7 @@ class ExecutionTargetStore(StoreBase):
         updated_by: uuid.UUID,
         endpoint: str | None = None,
         api_key: str | None = None,
-        namespace: str | None = None,
+        placement: ExecutionTargetPlacement,
     ) -> ExecutionTarget:
         """Re-enable a DRAINING target and transition it back to ACTIVE."""
         async with self._session_context() as session:
@@ -236,8 +237,7 @@ class ExecutionTargetStore(StoreBase):
                     target.endpoint = endpoint
                 if api_key is not None:
                     target.api_key = api_key
-                if namespace is not None:
-                    target.namespace = namespace
+                target.placement = placement
                 target.updated_by = updated_by
                 target.updated_at = datetime.now(UTC)
                 await session.commit()

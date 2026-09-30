@@ -16,6 +16,7 @@ from execution_plane.execution_target_reconciler.types import (
 )
 from execution_plane.models.cluster import ClusterType
 from execution_plane.models.execution_target import BackendType
+from execution_plane.models.execution_target_placement import KubernetesPlacement
 
 MakeCluster = Callable[..., ClusterSnapshot]
 MakeTarget = Callable[..., ExecutionTargetSnapshot]
@@ -56,7 +57,7 @@ def target_snapshot(
         id=target_id or uuid.uuid4(),
         cluster=cluster,
         name=name,
-        namespace=namespace,
+        placement=KubernetesPlacement(namespace=namespace),
         backend_type=backend_type,
         labels=labels or {},
         lifecycle=lifecycle,

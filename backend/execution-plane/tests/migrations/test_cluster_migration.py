@@ -37,6 +37,30 @@ def test_cluster_type_migration_follows_namespace_migration() -> None:
     assert migration.down_revision == "c8d9e0f1a2b3"
 
 
+def test_execution_target_placement_migration_replaces_namespace_without_backfill() -> None:
+    migration = importlib.import_module(
+        "execution_plane.migrations.versions.e0f1a2b3c4d5_replace_namespace_with_metadata"
+    )
+
+    with (
+        patch.object(migration.op, "add_column") as add_column,
+        patch.object(migration.op, "drop_column") as drop_column,
+    ):
+        migration.upgrade()
+        migration.downgrade()
+
+    assert migration.revision == "e0f1a2b3c4d5"
+    assert migration.down_revision == "d9e0f1a2b3c4"
+    placement_call = add_column.call_args_list[0]
+    placement_column = placement_call.args[1]
+    assert placement_call.args[0] == "execution_targets"
+    assert placement_column.name == "placement"
+    assert placement_column.nullable is False
+    assert isinstance(placement_column.type, migration.JSONB)
+    drop_column.assert_any_call("execution_targets", "namespace", schema="execution_plane")
+    drop_column.assert_any_call("execution_targets", "placement", schema="execution_plane")
+
+
 def test_cluster_migration_requires_an_empty_target_table_and_adds_target_constraints() -> None:
     """The green-field migration rejects existing targets and adds new invariants."""
     migration = importlib.import_module(

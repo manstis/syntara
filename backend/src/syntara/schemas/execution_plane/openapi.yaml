@@ -102,10 +102,16 @@ components:
         endpoint:
           type: string
           title: Endpoint
-        namespace:
-          type: string
-          title: Namespace
-          default: default
+        placement:
+          oneOf:
+            - $ref: '#/components/schemas/KubernetesPlacement'
+            - $ref: '#/components/schemas/RHELPlacement'
+          title: Placement
+          discriminator:
+            propertyName: type
+            mapping:
+              kubernetes: '#/components/schemas/KubernetesPlacement'
+              rhel: '#/components/schemas/RHELPlacement'
         status:
           $ref: '#/components/schemas/TargetStatus'
           default: registering
@@ -155,6 +161,7 @@ components:
         - name
         - backend_type
         - endpoint
+        - placement
         - created_by
         - created_at
         - updated_by
@@ -197,6 +204,45 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    KubernetesPlacement:
+      properties:
+        type:
+          type: string
+          const: kubernetes
+          title: Type
+          default: kubernetes
+        namespace:
+          type: string
+          maxLength: 63
+          minLength: 1
+          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+          title: Namespace
+          description: Kubernetes namespace reserved for execution workloads
+        node_selectors:
+          items:
+            type: string
+          type: array
+          title: Node Selectors
+        tolerations:
+          items:
+            type: string
+          type: array
+          title: Tolerations
+      type: object
+      required:
+        - namespace
+      title: KubernetesPlacement
+      description: Metadata required to place workers on Kubernetes.
+    RHELPlacement:
+      properties:
+        type:
+          type: string
+          const: rhel
+          title: Type
+          default: rhel
+      type: object
+      title: RHELPlacement
+      description: Placeholder for RHEL-specific execution-target metadata.
     TargetStatus:
       type: string
       enum:

@@ -15,6 +15,11 @@ if TYPE_CHECKING:
     from execution_plane.models.cluster import Cluster
 
 from execution_plane.models.constants import EP_SCHEMA
+from execution_plane.models.execution_target_placement import (
+    ExecutionTargetPlacement,
+    ExecutionTargetPlacementTypes,
+)
+from syntara.core.utils.sqlmodel import DiscriminatedJSONB
 
 
 class BackendType(StrEnum):
@@ -65,7 +70,12 @@ class ExecutionTarget(SQLModel, table=True):
         ),
     )
     endpoint: str
-    namespace: str = "default"
+    placement: ExecutionTargetPlacementTypes = Field(
+        sa_type=DiscriminatedJSONB(ExecutionTargetPlacement),  # type: ignore[arg-type,call-overload]
+        sa_column_kwargs={"name": "placement", "nullable": False},
+        discriminator="type",
+    )
+
     status: TargetStatus = Field(
         default=TargetStatus.REGISTERING,
         sa_column=Column(

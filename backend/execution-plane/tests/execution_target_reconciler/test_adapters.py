@@ -21,6 +21,7 @@ from execution_plane.execution_target_reconciler.protocols import ExecutionTarge
 from execution_plane.execution_target_reconciler.types import WorkRequirements
 from execution_plane.models.cluster import Cluster, ClusterStatus, ClusterType
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
+from execution_plane.models.execution_target_placement import KubernetesPlacement
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,7 +64,7 @@ def _target(
         name=name,
         backend_type=BackendType.VANILLA_K8S,
         endpoint="https://target.example",
-        namespace="ao-execution",
+        placement=KubernetesPlacement(namespace="ao-execution", node_selectors=["k=v"]),
         api_key="secret",
         is_default=is_default,
         status=TargetStatus.ACTIVE,
@@ -140,7 +141,9 @@ async def test_store_backed_registry_interns_cluster_snapshots() -> None:
 
     assert len(listed) == 2
     assert listed[0].cluster is listed[1].cluster
-    assert listed[0].namespace == "ao-execution"
+    assert isinstance(listed[0].placement, KubernetesPlacement)
+    assert listed[0].placement.namespace == "ao-execution"
+    assert listed[0].placement.node_selectors == ["k=v"]
 
 
 @pytest.mark.asyncio

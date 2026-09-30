@@ -60,7 +60,7 @@ class TestOpenShiftClusterSync:
         target = target_result.scalar_one_or_none()
         assert target is not None
         assert target.is_default is True
-        assert target.namespace == "default"
+        assert target.placement.namespace == "default"
         assert target.endpoint == "https://api.example.com:6443"
         assert target.status == TargetStatus.ACTIVE
 

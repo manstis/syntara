@@ -31,6 +31,7 @@ from dev_cli import (
 )
 from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.models.cluster import ClusterStatus, ClusterType
+from execution_plane.models.execution_target_placement import KubernetesPlacement
 
 _DATABASE_UNAVAILABLE = "database unavailable"
 
@@ -484,7 +485,14 @@ async def test_register_environment_record_provisions_a_new_cluster(monkeypatch:
 
     assert registry.provision_calls == [
         (
-            (details.name, details.endpoint, details.api_key, details.namespace, dev_cli.CLI_ACTOR_ID, details.labels),
+            (
+                details.name,
+                details.endpoint,
+                details.api_key,
+                KubernetesPlacement(namespace=details.namespace),
+                dev_cli.CLI_ACTOR_ID,
+                details.labels,
+            ),
             {"cluster_type": ClusterType.OPENSHIFT},
         )
     ]
@@ -519,7 +527,7 @@ async def test_register_environment_record_syncs_an_existing_active_cluster(
             "updated_by": dev_cli.CLI_ACTOR_ID,
             "endpoint": details.endpoint,
             "api_key": details.api_key,
-            "namespace": details.namespace,
+            "placement": KubernetesPlacement(namespace=details.namespace),
         }
     ]
     assert registry.provision_calls == []

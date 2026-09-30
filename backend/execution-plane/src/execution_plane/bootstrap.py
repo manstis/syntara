@@ -16,6 +16,7 @@ from execution_plane.execution_target.execution_target_registry import Execution
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.models.cluster import Cluster, ClusterStatus, ClusterType
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
+from execution_plane.models.execution_target_placement import KubernetesPlacement
 
 LOCAL_CLUSTER_NAME = "local-execution-plane"
 LOCAL_CLUSTER_ENDPOINT = "local://execution-plane"
@@ -45,7 +46,7 @@ class LocalDiscoveryMechanism:
                     name=LOCAL_TARGET_NAME,
                     backend_type=BackendType.VANILLA_K8S,
                     endpoint=LOCAL_TARGET_ENDPOINT,
-                    namespace=LOCAL_TARGET_NAMESPACE,
+                    placement=KubernetesPlacement(namespace=LOCAL_TARGET_NAMESPACE),
                     api_key=LOCAL_API_KEY,
                     is_default=True,
                 )
@@ -98,7 +99,7 @@ async def bootstrap_local_cluster(
             name=target.name,
             backend_type=target.backend_type,
             endpoint=target.endpoint,
-            namespace=target.namespace,
+            placement=target.placement,
             api_key=target.api_key,
             is_default=target.is_default,
             created_by=created_by,

@@ -23,6 +23,7 @@ from execution_plane.cluster.cluster_store import ClusterStore
 from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
 from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
 from execution_plane.models.cluster import ClusterStatus, ClusterType
+from execution_plane.models.execution_target_placement import KubernetesPlacement
 from execution_plane.models.work_item import WorkItem
 from execution_plane.work_store import WorkStore
 from sqlalchemy import delete
@@ -285,14 +286,14 @@ async def _register_environment_record(details: EnvironmentDetails, database_url
                 updated_by=CLI_ACTOR_ID,
                 endpoint=details.endpoint,
                 api_key=details.api_key,
-                namespace=details.namespace,
+                placement=KubernetesPlacement(namespace=details.namespace),
             )
         else:
             await cluster_registry.provision(
                 details.name,
                 details.endpoint,
                 details.api_key,
-                details.namespace,
+                KubernetesPlacement(namespace=details.namespace),
                 CLI_ACTOR_ID,
                 details.labels,
                 cluster_type=_cluster_type_for_provider(details.provider),

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from execution_plane.cluster.cluster_store import ClusterStore
     from execution_plane.execution_target.execution_target_registry import ExecutionTargetRegistry
     from execution_plane.models.execution_target import ExecutionTarget
+    from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
 
 
 @dataclass(frozen=True)
@@ -35,8 +36,8 @@ class DiscoveredExecutionTarget:
     backend_type: BackendType
     endpoint: str
     api_key: str = field(repr=False)
+    placement: ExecutionTargetPlacement
     is_default: bool = False
-    namespace: str = "default"
 
 
 class DiscoveryState(StrEnum):
@@ -133,7 +134,7 @@ class ClusterRegistry:
                     name=target.name,
                     backend_type=target.backend_type,
                     endpoint=target.endpoint,
-                    namespace=target.namespace,
+                    placement=target.placement,
                     api_key=target.api_key,
                     is_default=target.is_default,
                     created_by=created_by,
@@ -153,7 +154,7 @@ class ClusterRegistry:
         name: str,
         endpoint: str,
         api_key: str,
-        namespace: str,
+        placement: ExecutionTargetPlacement,
         created_by: uuid.UUID,
         labels: dict[str, str] | None = None,
         *,
@@ -168,7 +169,7 @@ class ClusterRegistry:
         """
         existing = await self._store.get_by_name(name)
         if existing is not None and existing.status is ClusterStatus.DRAINING:
-            return await self._reactivate(existing, endpoint, api_key, namespace, created_by, labels)
+            return await self._reactivate(existing, endpoint, api_key, placement, created_by, labels)
 
         cluster = await self._store.create(name, endpoint, api_key, created_by, labels, cluster_type=cluster_type)
         try:
@@ -178,7 +179,7 @@ class ClusterRegistry:
                 backend_type=BackendType.VANILLA_K8S,
                 endpoint=endpoint,
                 api_key=api_key,
-                namespace=namespace,
+                placement=placement,
                 is_default=True,
                 created_by=created_by,
             )
@@ -195,7 +196,7 @@ class ClusterRegistry:
         cluster: Cluster,
         endpoint: str,
         api_key: str,
-        namespace: str,
+        placement: ExecutionTargetPlacement,
         updated_by: uuid.UUID,
         labels: dict[str, str] | None = None,
     ) -> Cluster:
@@ -214,7 +215,7 @@ class ClusterRegistry:
                 updated_by=updated_by,
                 endpoint=endpoint,
                 api_key=api_key,
-                namespace=namespace,
+                placement=placement,
             )
         return reactivated
 
@@ -231,7 +232,7 @@ class ClusterRegistry:
         name: str | None = None,
         endpoint: str | None = None,
         api_key: str | None = None,
-        namespace: str | None = None,
+        placement: ExecutionTargetPlacement,
     ) -> None:
         """Update a cluster and its default execution target.
 
@@ -248,7 +249,7 @@ class ClusterRegistry:
             name=name,
             endpoint=endpoint,
             api_key=api_key,
-            namespace=namespace,
+            placement=placement,
         )
 
     async def get(self, cluster_id: uuid.UUID) -> Cluster | None:

@@ -55,7 +55,12 @@ async def test_example_01_region_and_env_select_the_matching_namespace(
     east = make_cluster(name="ocp-us-east-1", labels={"region": "us-east-1"})
     west = make_cluster(name="ocp-eu-west-1", labels={"region": "eu-west-1"})
     east_default = make_target(east, name="ep-default", is_default=True)
-    production = make_target(east, name="ns-production", namespace="production", labels={"env": "production"})
+    production = make_target(
+        east,
+        name="ns-production",
+        namespace="production",
+        labels={"env": "production"},
+    )
     west_default = make_target(west, name="ep-default-west", is_default=True)
     resolver = make_reconciler([east_default, production, west_default])
 

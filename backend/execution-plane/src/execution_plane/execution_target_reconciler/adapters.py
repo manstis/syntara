@@ -41,7 +41,7 @@ def execution_target_snapshot_from_model(
         id=target.id,
         cluster=cluster,
         name=target.name,
-        namespace=target.namespace,
+        placement=target.placement,
         backend_type=target.backend_type,
         labels=dict(target.labels),
         lifecycle=target.status.value,

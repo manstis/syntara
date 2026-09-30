@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from execution_plane.cluster.cluster_registry import ClusterRegistry
 
 import structlog
+from execution_plane.models.execution_target_placement import KubernetesPlacement
 from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import col, delete, select
@@ -690,7 +691,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
             name=integration.name,
             endpoint=integration.configuration.base_url,
             api_key=api_key,
-            namespace=integration.configuration.namespace,
+            placement=KubernetesPlacement(namespace=integration.configuration.namespace),
             created_by=self.user.id,
             labels=labels,
         )
@@ -746,7 +747,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
 
         new_name = integration.name if "name" in data.model_fields_set else None
         new_endpoint = integration.configuration.base_url if "configuration" in data.model_fields_set else None
-        new_namespace = integration.configuration.namespace if "configuration" in data.model_fields_set else None
+        new_placement = KubernetesPlacement(namespace=integration.configuration.namespace)
 
         await self._cluster_registry.sync_update(
             cluster.id,
@@ -754,7 +755,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
             name=new_name,
             endpoint=new_endpoint,
             api_key=api_key,
-            namespace=new_namespace,
+            placement=new_placement,
         )
 
     async def update_integration(self, integration_id: UUID, data: IntegrationUpdate) -> IntegrationRead:

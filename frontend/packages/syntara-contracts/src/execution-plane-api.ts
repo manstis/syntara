@@ -74,11 +74,8 @@ export interface components {
       backend_type: components['schemas']['BackendType']
       /** Endpoint */
       endpoint: string
-      /**
-       * Namespace
-       * @default default
-       */
-      namespace?: string
+      /** Placement */
+      placement: components['schemas']['KubernetesPlacement'] | components['schemas']['RHELPlacement']
       /** @default registering */
       status?: components['schemas']['TargetStatus']
       /**
@@ -138,6 +135,37 @@ export interface components {
     HTTPValidationError: {
       /** Detail */
       detail?: components['schemas']['ValidationError'][]
+    }
+    /**
+     * KubernetesPlacement
+     * @description Metadata required to place workers on Kubernetes.
+     */
+    KubernetesPlacement: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      type: 'kubernetes'
+      /**
+       * Namespace
+       * @description Kubernetes namespace reserved for execution workloads
+       */
+      namespace: string
+      /** Node Selectors */
+      node_selectors?: string[]
+      /** Tolerations */
+      tolerations?: string[]
+    }
+    /**
+     * RHELPlacement
+     * @description Placeholder for RHEL-specific execution-target metadata.
+     */
+    RHELPlacement: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      type: 'rhel'
     }
     /**
      * TargetStatus

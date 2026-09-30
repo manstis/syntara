@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
     from execution_plane.models.cluster import ClusterType
     from execution_plane.models.execution_target import BackendType
+    from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
 
 ACTIVE_LIFECYCLE = "active"
 
@@ -66,7 +67,7 @@ class ExecutionTargetSnapshot:
     id: uuid.UUID
     cluster: ClusterSnapshot
     name: str
-    namespace: str
+    placement: ExecutionTargetPlacement
     backend_type: BackendType
     labels: dict[str, str]
     lifecycle: str

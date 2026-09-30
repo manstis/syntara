@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
     from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
     from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
+    from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
 
 
 class ExecutionTargetRegistry:
@@ -32,8 +33,8 @@ class ExecutionTargetRegistry:
         api_key: str,
         is_default: bool,  # noqa: FBT001
         created_by: uuid.UUID,
+        placement: ExecutionTargetPlacement,
         labels: dict[str, str] | None = None,
-        namespace: str = "default",
     ) -> ExecutionTarget:
         """Create an execution target through the persistence boundary."""
         return await self._store.create(
@@ -45,7 +46,7 @@ class ExecutionTargetRegistry:
             is_default,
             created_by,
             labels=labels,
-            namespace=namespace,
+            placement=placement,
         )
 
     async def get(self, target_id: uuid.UUID) -> ExecutionTarget | None:
@@ -78,18 +79,18 @@ class ExecutionTargetRegistry:
         updated_by: uuid.UUID,
         name: str | None = None,
         endpoint: str | None = None,
-        namespace: str | None = None,
+        placement: ExecutionTargetPlacement,
         labels: dict[str, str] | None = None,
         status_message: str | None = None,
         api_key: str | None = None,
     ) -> ExecutionTarget:
-        """Update target metadata while preserving cluster ownership and default status."""
+        """Update target placement while preserving cluster ownership and default status."""
         return await self._store.update(
             target_id,
             updated_by=updated_by,
             name=name,
             endpoint=endpoint,
-            namespace=namespace,
+            placement=placement,
             labels=labels,
             status_message=status_message,
             api_key=api_key,
@@ -102,7 +103,7 @@ class ExecutionTargetRegistry:
         updated_by: uuid.UUID,
         endpoint: str | None = None,
         api_key: str | None = None,
-        namespace: str | None = None,
+        placement: ExecutionTargetPlacement,
     ) -> ExecutionTarget:
         """Re-enable a DRAINING target and transition it back to ACTIVE."""
         return await self._store.reactivate(
@@ -110,7 +111,7 @@ class ExecutionTargetRegistry:
             updated_by=updated_by,
             endpoint=endpoint,
             api_key=api_key,
-            namespace=namespace,
+            placement=placement,
         )
 
     async def _require_non_default(self, target_id: uuid.UUID) -> ExecutionTarget:
