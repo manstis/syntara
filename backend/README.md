@@ -132,11 +132,16 @@ make db-run
 make cache-run
 make temporal-run
 
-# Create/register a local Kind/Minikube cluster, then start the API.
-# (The root `make dev` combines cluster setup with the API, frontend, and
-# standalone EP worker.)
+# In another terminal, create/register a local Kind/Minikube cluster.
 make ep-dev-up
+
+# In another terminal, start the backend API. This applies the backend and
+# Execution Plane migrations before starting the API.
 make dev
+
+# After the API startup has completed its migrations, start the standalone
+# Execution Plane worker in another terminal.
+make ep-worker-run
 
 # Run tests
 make test-all
@@ -154,9 +159,9 @@ The Execution Plane development workflow uses the `dev_cli.py` tool through the
 remote OpenShift cluster. The cluster targets create or register the selected
 environment; they do not start an EP worker.
 
-The worker is started by the selected application startup path: the root
-`make dev` starts one standalone host worker, while `make run-all` starts the
-containerized `execution-plane-worker` service.
+The worker is started by the selected application startup path: the repository root
+`make dev` starts one standalone host worker, while backend `make run-all`
+starts the containerized `execution-plane-worker` service.
 
 #### Prerequisites
 
@@ -185,8 +190,12 @@ The usual local workflow is then:
 # Kind and Minikube are installed and --provider is not specified.
 make ep-dev-up
 
-# Start the API, run migrations and seed data, and start one host EP worker.
+# In another terminal, start the API, run migrations, and seed data.
 make dev
+
+# After the API startup has completed its migrations, start the standalone
+# Execution Plane worker in another terminal.
+make ep-worker-run
 ```
 
 Select a provider explicitly when needed:
@@ -288,17 +297,21 @@ make ep-dev-reset EP_DEV_ARGS="--provider minikube --cluster execution-plane"
 ```
 
 The root `make dev` runs `ep-dev-up` first, then starts the API, Temporal
-workers, frontend, and one standalone host EP worker. The backend `make dev`
-target only starts the backend API; prepare the cluster separately with
-`make ep-dev-up` when using backend targets directly.
+workers, frontend, and one standalone host EP worker. When running commands
+from the `backend` directory, the equivalent host-based workflow is to run
+`make ep-dev-up`, `make dev`, and `make ep-worker-run` in separate terminals;
+the backend `make dev` target only starts the backend API and
+`make ep-worker-run` owns the standalone EP worker.
 
-`make setup` starts supporting infrastructure, applies migrations, and seeds
-the database, but does not create the EP cluster or start an EP worker. Use the
-root `make dev` for the host-worker workflow, or use `make -C backend run-all`
-for the containerized workflow. `run-all` registers the local cluster before
-starting the compose `execution-plane-worker` service. `make services-run`
-starts supporting services only; it does not create the EP cluster or start an
-EP worker.
+From the repository root, `make setup` starts supporting infrastructure,
+applies migrations, and seeds the database, but does not create the EP cluster
+or start an EP worker. From the repository root, use `make dev` for the
+host-worker workflow or `make -C backend run-all` for the containerized
+workflow. From the `backend` directory, use `make services-run` to start
+supporting services, followed by the local workflow above, or use `make run-all`;
+`run-all` registers the local cluster before starting the compose
+`execution-plane-worker` service. `make services-run` does not create the EP
+cluster or start an EP worker.
 
 If both Kind and Minikube are installed, specify `--provider`. If registration
 fails, verify that the database is running, `make ep-migrate` has completed,
