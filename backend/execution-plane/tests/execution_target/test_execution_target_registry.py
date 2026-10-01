@@ -189,6 +189,7 @@ async def test_store_rejects_a_second_default_target_for_a_cluster() -> None:
     store = ExecutionTargetStore("postgresql+asyncpg://localhost/syntara")
     session = _Session(result=_Result(existing_default))
     store._session_factory = _SessionFactory(session)  # type: ignore[assignment]
+    placement = KubernetesPlacement(namespace="default")
 
     with pytest.raises(DefaultExecutionTargetError):
         await store.create(
@@ -199,7 +200,7 @@ async def test_store_rejects_a_second_default_target_for_a_cluster() -> None:
             "secret",
             is_default=True,
             created_by=uuid.uuid4(),
-            placement=KubernetesPlacement(namespace="default"),
+            placement=placement,
         )
 
     assert session.added is None
