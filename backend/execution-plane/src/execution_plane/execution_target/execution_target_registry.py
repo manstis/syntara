@@ -14,10 +14,7 @@ if TYPE_CHECKING:
 
     from execution_plane.execution_target.execution_target_store import ExecutionTargetStore
     from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
-    from execution_plane.models.execution_target_placement import (
-        ExecutionTargetPlacement,
-        ExecutionTargetPlacementTypes,
-    )
+    from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
 
 
 class ExecutionTargetRegistry:
@@ -87,12 +84,7 @@ class ExecutionTargetRegistry:
         status_message: str | None = None,
         api_key: str | None = None,
     ) -> ExecutionTarget:
-        """Update target placement while preserving cluster ownership and default status."""
-        if placement is not None:
-            target = await self._store.get(target_id)
-            if target is None:
-                raise ExecutionTargetNotFoundError(target_id)
-            placement = self._merge_placement(target.placement, placement)
+        """Update target fields through the persistence boundary."""
         return await self._store.update(
             target_id,
             updated_by=updated_by,
@@ -103,17 +95,6 @@ class ExecutionTargetRegistry:
             status_message=status_message,
             api_key=api_key,
         )
-
-    @staticmethod
-    def _merge_placement(
-        current: ExecutionTargetPlacementTypes,
-        patch: ExecutionTargetPlacementTypes,
-    ) -> ExecutionTargetPlacementTypes:
-        """Apply explicitly supplied placement fields without dropping stored values."""
-        if current.type != patch.type:
-            return patch
-        updates = patch.model_dump(exclude={"type"}, exclude_unset=True)
-        return current.model_copy(update=updates)
 
     async def reactivate(
         self,

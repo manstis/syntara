@@ -17,7 +17,10 @@ from execution_plane.store_base import StoreBase
 if TYPE_CHECKING:
     import uuid
 
-    from execution_plane.models.execution_target_placement import ExecutionTargetPlacement
+    from execution_plane.models.execution_target_placement import (
+        ExecutionTargetPlacement,
+        ExecutionTargetPlacementTypes,
+    )
 
 
 class ExecutionTargetNotFoundError(LookupError):
@@ -42,6 +45,17 @@ class ClusterNotAvailableError(ValueError):
 
 class ExecutionTargetStore(StoreBase):
     """Persist execution targets and own their database resources."""
+
+    @staticmethod
+    def _merge_placement(
+        current: ExecutionTargetPlacementTypes,
+        patch: ExecutionTargetPlacementTypes,
+    ) -> ExecutionTargetPlacementTypes:
+        """Apply explicitly supplied placement fields without dropping stored values."""
+        if current.type != patch.type:
+            return patch
+        updates = patch.model_dump(exclude={"type"}, exclude_unset=True)
+        return current.model_copy(update=updates)
 
     @staticmethod
     def _can_add_execution_target(cluster: Cluster | None) -> bool:
@@ -193,7 +207,7 @@ class ExecutionTargetStore(StoreBase):
         """Update mutable target metadata without changing ownership or default status."""
         async with self._session_context() as session:
             try:
-                target = await session.get(ExecutionTarget, target_id)
+                target = await session.get(ExecutionTarget, target_id, with_for_update=True)
                 if target is None:
                     raise ExecutionTargetNotFoundError(target_id)  # noqa: TRY301
                 if name is not None:
@@ -201,7 +215,7 @@ class ExecutionTargetStore(StoreBase):
                 if endpoint is not None:
                     target.endpoint = endpoint
                 if placement is not None:
-                    target.placement = placement
+                    target.placement = self._merge_placement(target.placement, placement)
                 if labels is not None:
                     target.labels = labels
                 if status_message is not None:

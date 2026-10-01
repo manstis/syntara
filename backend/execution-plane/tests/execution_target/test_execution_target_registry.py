@@ -377,53 +377,6 @@ async def test_registry_delegates_create_get_activate_and_update() -> None:
 
 
 @pytest.mark.asyncio
-async def test_registry_merges_partial_placement_before_persisting_update() -> None:
-    current = _target()
-    current.placement = KubernetesPlacement(
-        namespace="execution",
-        node_selectors=["kubernetes.io/os=linux"],
-        tolerations=["dedicated=execution:NoSchedule"],
-    )
-    store = _Store(current)
-    registry = ExecutionTargetRegistry(store)  # type: ignore[arg-type]
-
-    await registry.update(
-        current.id,
-        updated_by=uuid.uuid4(),
-        placement=KubernetesPlacement(namespace="updated"),
-    )
-
-    placement = store.updated["placement"]
-    assert isinstance(placement, KubernetesPlacement)
-    assert placement.namespace == "updated"
-    assert placement.node_selectors == ["kubernetes.io/os=linux"]
-    assert placement.tolerations == ["dedicated=execution:NoSchedule"]
-
-
-@pytest.mark.asyncio
-async def test_registry_applies_explicit_empty_placement_fields() -> None:
-    current = _target()
-    current.placement = KubernetesPlacement(
-        namespace="execution",
-        node_selectors=["kubernetes.io/os=linux"],
-        tolerations=["dedicated=execution:NoSchedule"],
-    )
-    store = _Store(current)
-    registry = ExecutionTargetRegistry(store)  # type: ignore[arg-type]
-
-    await registry.update(
-        current.id,
-        updated_by=uuid.uuid4(),
-        placement=KubernetesPlacement(namespace="execution", node_selectors=[], tolerations=[]),
-    )
-
-    placement = store.updated["placement"]
-    assert isinstance(placement, KubernetesPlacement)
-    assert placement.node_selectors == []
-    assert placement.tolerations == []
-
-
-@pytest.mark.asyncio
 async def test_registry_rejects_deletion_of_an_unknown_target() -> None:
     class EmptyStore(_Store):
         async def get(self, _target_id: uuid.UUID) -> ExecutionTarget | None:

@@ -16,6 +16,7 @@ from execution_plane.execution_target.execution_target_store import (
 )
 from execution_plane.models.cluster import Cluster, ClusterStatus
 from execution_plane.models.execution_target import BackendType, ExecutionTarget, TargetStatus
+from execution_plane.models.execution_target_placement import KubernetesPlacement
 from sqlalchemy.exc import IntegrityError
 
 _DATABASE_UNAVAILABLE = "database unavailable"
@@ -395,6 +396,53 @@ async def test_update_can_replace_api_key_and_rejects_missing_target() -> None:
     assert missing_session.rollbacks == 1
     await store.close()
     await missing_store.close()
+
+
+@pytest.mark.asyncio
+async def test_update_merges_partial_placement_while_holding_the_target_lock() -> None:
+    target = _target()
+    target.placement = KubernetesPlacement(
+        namespace="execution",
+        node_selectors=["kubernetes.io/os=linux"],
+        tolerations=["dedicated=execution:NoSchedule"],
+    )
+    session = _Session(result=_Result(target))
+    store = _store(session)
+
+    result = await store.update(
+        target.id,
+        updated_by=uuid.uuid4(),
+        placement=KubernetesPlacement(namespace="updated"),
+    )
+
+    assert isinstance(result.placement, KubernetesPlacement)
+    assert result.placement.namespace == "updated"
+    assert result.placement.node_selectors == ["kubernetes.io/os=linux"]
+    assert result.placement.tolerations == ["dedicated=execution:NoSchedule"]
+    assert session.get_for_update == [True]
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_update_preserves_explicit_empty_placement_fields() -> None:
+    target = _target()
+    target.placement = KubernetesPlacement(
+        namespace="execution",
+        node_selectors=["kubernetes.io/os=linux"],
+        tolerations=["dedicated=execution:NoSchedule"],
+    )
+    store = _store(_Session(result=_Result(target)))
+
+    result = await store.update(
+        target.id,
+        updated_by=uuid.uuid4(),
+        placement=KubernetesPlacement(namespace="execution", node_selectors=[], tolerations=[]),
+    )
+
+    assert isinstance(result.placement, KubernetesPlacement)
+    assert result.placement.node_selectors == []
+    assert result.placement.tolerations == []
+    await store.close()
 
 
 @pytest.mark.asyncio
