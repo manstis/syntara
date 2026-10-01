@@ -232,7 +232,7 @@ class ClusterRegistry:
         name: str | None = None,
         endpoint: str | None = None,
         api_key: str | None = None,
-        placement: ExecutionTargetPlacement,
+        placement: ExecutionTargetPlacement | None = None,
     ) -> None:
         """Update a cluster and its default execution target.
 

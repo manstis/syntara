@@ -11,8 +11,7 @@ from execution_plane.models.execution_target_placement import (
     KubernetesPlacement,
     RHELPlacement,
 )
-
-from syntara.core.utils.sqlmodel import DiscriminatedJSONB
+from execution_plane.models.sqlmodel_types import DiscriminatedJSONB
 
 
 def test_execution_target_requires_placement() -> None:

@@ -334,6 +334,7 @@ class TestClusterSyncOnUpdate:
         registry.sync_update.assert_called_once()
         kw = registry.sync_update.call_args[1]
         assert kw["name"] == "Renamed OpenShift"
+        assert kw["placement"] is None
 
     @pytest.mark.asyncio
     async def test_openshift_update_irrelevant_field_does_not_sync(

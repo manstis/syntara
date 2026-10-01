@@ -42,6 +42,11 @@ def _target(*, cluster_id: uuid.UUID | None = None, is_default: bool = False) ->
         backend_type=BackendType.VANILLA_K8S,
         is_default=is_default,
         status=TargetStatus.ACTIVE,
+        placement=KubernetesPlacement(
+            namespace="execution",
+            node_selectors=["kubernetes.io/os=linux"],
+            tolerations=["dedicated=execution:NoSchedule"],
+        ),
         created_by=uuid.uuid4(),
         created_at=now,
         updated_by=uuid.uuid4(),
@@ -253,6 +258,9 @@ class _ClusterStore:
         self.created = True
         return self.cluster
 
+    async def update(self, *_: object, **__: object) -> Cluster:
+        return self.cluster
+
     async def record_discovery_state(
         self, _cluster_id: uuid.UUID, status: ClusterStatus, status_message: str | None, _updated_by: uuid.UUID
     ) -> Cluster:
@@ -290,6 +298,7 @@ class _TargetRegistry:
         self.created: list[dict[str, object]] = []
         self.targets = targets or []
         self.finalized: list[uuid.UUID] = []
+        self.updated: list[dict[str, object]] = []
 
     async def create(self, **kwargs: object) -> ExecutionTarget:
         self.created.append(kwargs)
@@ -302,6 +311,10 @@ class _TargetRegistry:
 
     async def list(self, **_: object) -> list[ExecutionTarget]:
         return self.targets
+
+    async def update(self, _target_id: uuid.UUID, **kwargs: object) -> ExecutionTarget:
+        self.updated.append(kwargs)
+        return self.targets[0]
 
     async def finalize_delete(self, target_id: uuid.UUID) -> None:
         self.finalized.append(target_id)
@@ -509,6 +522,28 @@ async def test_registry_delegates_get_and_list_to_the_cluster_store() -> None:
 
     assert await registry.get(cluster.id) is cluster
     assert await registry.list(status=ClusterStatus.ACTIVE, enabled=True) == [cluster]
+
+
+@pytest.mark.asyncio
+async def test_sync_update_forwards_placement_patch_to_target_registry() -> None:
+    from execution_plane.cluster.cluster_registry import ClusterRegistry
+
+    cluster = _cluster()
+    target = _target(cluster_id=cluster.id, is_default=True)
+    targets = _TargetRegistry(targets=[target])
+    registry = ClusterRegistry(_ClusterStore(cluster), targets, _Discovery(object()))  # type: ignore[arg-type]
+
+    await registry.sync_update(
+        cluster.id,
+        updated_by=uuid.uuid4(),
+        placement=KubernetesPlacement(namespace="updated"),
+    )
+
+    placement = targets.updated[0]["placement"]
+    assert isinstance(placement, KubernetesPlacement)
+    assert placement.namespace == "updated"
+    assert placement.node_selectors == []
+    assert placement.tolerations == []
 
 
 def test_noop_discovery_returns_a_failed_result() -> None:

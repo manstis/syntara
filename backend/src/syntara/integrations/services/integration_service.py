@@ -747,7 +747,11 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
 
         new_name = integration.name if "name" in data.model_fields_set else None
         new_endpoint = integration.configuration.base_url if "configuration" in data.model_fields_set else None
-        new_placement = KubernetesPlacement(namespace=integration.configuration.namespace)
+        new_placement = (
+            KubernetesPlacement(namespace=integration.configuration.namespace)
+            if "configuration" in data.model_fields_set
+            else None
+        )
 
         await self._cluster_registry.sync_update(
             cluster.id,

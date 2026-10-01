@@ -19,7 +19,7 @@ from execution_plane.models.execution_target_placement import (
     ExecutionTargetPlacement,
     ExecutionTargetPlacementTypes,
 )
-from syntara.core.utils.sqlmodel import DiscriminatedJSONB
+from execution_plane.models.sqlmodel_types import DiscriminatedJSONB
 
 
 class BackendType(StrEnum):

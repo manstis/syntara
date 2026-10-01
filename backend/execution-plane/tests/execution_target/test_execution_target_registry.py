@@ -122,6 +122,7 @@ class _Store:
     def __init__(self, target: ExecutionTarget) -> None:
         self.target = target
         self.delete_requested = False
+        self.updated: dict[str, object] = {}
 
     async def create(self, *_: object, **__: object) -> ExecutionTarget:
         return self.target
@@ -142,7 +143,8 @@ class _Store:
     async def activate(self, _target_id: uuid.UUID, _updated_by: uuid.UUID) -> ExecutionTarget:
         return self.target
 
-    async def update(self, _target_id: uuid.UUID, **_: object) -> ExecutionTarget:
+    async def update(self, _target_id: uuid.UUID, **kwargs: object) -> ExecutionTarget:
+        self.updated = kwargs
         return self.target
 
 
@@ -372,6 +374,53 @@ async def test_registry_delegates_create_get_activate_and_update() -> None:
         )
         is target
     )
+
+
+@pytest.mark.asyncio
+async def test_registry_merges_partial_placement_before_persisting_update() -> None:
+    current = _target()
+    current.placement = KubernetesPlacement(
+        namespace="execution",
+        node_selectors=["kubernetes.io/os=linux"],
+        tolerations=["dedicated=execution:NoSchedule"],
+    )
+    store = _Store(current)
+    registry = ExecutionTargetRegistry(store)  # type: ignore[arg-type]
+
+    await registry.update(
+        current.id,
+        updated_by=uuid.uuid4(),
+        placement=KubernetesPlacement(namespace="updated"),
+    )
+
+    placement = store.updated["placement"]
+    assert isinstance(placement, KubernetesPlacement)
+    assert placement.namespace == "updated"
+    assert placement.node_selectors == ["kubernetes.io/os=linux"]
+    assert placement.tolerations == ["dedicated=execution:NoSchedule"]
+
+
+@pytest.mark.asyncio
+async def test_registry_applies_explicit_empty_placement_fields() -> None:
+    current = _target()
+    current.placement = KubernetesPlacement(
+        namespace="execution",
+        node_selectors=["kubernetes.io/os=linux"],
+        tolerations=["dedicated=execution:NoSchedule"],
+    )
+    store = _Store(current)
+    registry = ExecutionTargetRegistry(store)  # type: ignore[arg-type]
+
+    await registry.update(
+        current.id,
+        updated_by=uuid.uuid4(),
+        placement=KubernetesPlacement(namespace="execution", node_selectors=[], tolerations=[]),
+    )
+
+    placement = store.updated["placement"]
+    assert isinstance(placement, KubernetesPlacement)
+    assert placement.node_selectors == []
+    assert placement.tolerations == []
 
 
 @pytest.mark.asyncio

@@ -185,7 +185,7 @@ class ExecutionTargetStore(StoreBase):
         updated_by: uuid.UUID,
         name: str | None = None,
         endpoint: str | None = None,
-        placement: ExecutionTargetPlacement,
+        placement: ExecutionTargetPlacement | None = None,
         labels: dict[str, str] | None = None,
         status_message: str | None = None,
         api_key: str | None = None,
@@ -200,7 +200,8 @@ class ExecutionTargetStore(StoreBase):
                     target.name = name
                 if endpoint is not None:
                     target.endpoint = endpoint
-                target.placement = placement
+                if placement is not None:
+                    target.placement = placement
                 if labels is not None:
                     target.labels = labels
                 if status_message is not None:

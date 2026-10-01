@@ -31,19 +31,53 @@ def test_kubernetes_metadata_accepts_valid_namespace_selector_and_toleration() -
     assert metadata.namespace == "ao-execution"
 
 
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "key=",
+        "node-role.kubernetes.io/worker=",
+        "kubernetes.io/os=linux",
+    ],
+)
+def test_kubernetes_metadata_accepts_node_selector_short_forms(selector: str) -> None:
+    KubernetesPlacement(namespace="execution", node_selectors=[selector])
+
+
+@pytest.mark.parametrize(
+    "toleration",
+    [
+        "node-role.kubernetes.io/control-plane=:NoSchedule",
+        "dedicated:NoSchedule",
+        ":NoSchedule",
+        "dedicated=execution",
+        "dedicated=execution:",
+    ],
+)
+def test_kubernetes_metadata_accepts_toleration_short_forms(toleration: str) -> None:
+    KubernetesPlacement(namespace="execution", tolerations=[toleration])
+
+
 @pytest.mark.parametrize("namespace", ["", "UpperCase", "has_underscore", "-leading", "trailing-"])
 def test_kubernetes_metadata_rejects_invalid_namespace(namespace: str) -> None:
     with pytest.raises(ValidationError):
         KubernetesPlacement(namespace=namespace)
 
 
-@pytest.mark.parametrize("selector", ["missing-value", "bad key=value", "key="])
+@pytest.mark.parametrize("selector", ["missing-value", "bad key=value", "=value"])
 def test_kubernetes_metadata_rejects_invalid_node_selector(selector: str) -> None:
     with pytest.raises(ValidationError):
         KubernetesPlacement(namespace="execution", node_selectors=[selector])
 
 
-@pytest.mark.parametrize("toleration", ["missing-effect", "key=value", "key=value:InvalidEffect"])
+@pytest.mark.parametrize(
+    "toleration",
+    [
+        "bad key=value:NoSchedule",
+        "=value:NoSchedule",
+        "key=value:InvalidEffect",
+        "key=value:NoSchedule:extra",
+    ],
+)
 def test_kubernetes_metadata_rejects_invalid_toleration(toleration: str) -> None:
     with pytest.raises(ValidationError):
         KubernetesPlacement(namespace="execution", tolerations=[toleration])
