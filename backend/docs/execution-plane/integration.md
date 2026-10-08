@@ -51,6 +51,12 @@ Cluster-management credentials are encrypted in EP's database. Workload
 credential mounts remain out of scope until ANSTRAT-2422 establishes the
 extension contract.
 
+The two AO-owned status state machines are documented in:
+
+- [Activity binding status progression](activity-binding-status.md)
+- [Integration execution-plane status progression](integration-status.md)
+- [Combined status progression overview](status-progression.md)
+
 ## Combined-service smoke evidence
 
 On 6 October 2026, the current AO and EP migration branches were run together
