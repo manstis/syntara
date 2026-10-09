@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
-from typing import NoReturn
+from typing import Literal, NoReturn
 from uuid import UUID
 
 import structlog
@@ -23,7 +23,7 @@ from syntara.core.services.secret_service import SecretService
 from syntara.core.services.user_reference_resolution import UserReferenceResolverMixin
 from syntara.credentials.exceptions import CredentialDisabledError
 from syntara.credentials.lib.injector_resolver import InjectorResolver
-from syntara.execution_plane.integration_sync_model import ExecutionPlaneIntegrationSync
+from syntara.execution_plane.commands.integrations import enqueue_integration_revision
 from syntara.integrations.adapters.factory import create_health_check_adapter
 from syntara.integrations.adapters.protocol import (
     DiscoveredLLMModel,
@@ -222,7 +222,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
             Integration.id == integration_id,  # type: ignore[arg-type]
         )
         if for_update:
-            query = query.with_for_update()
+            query = query.with_for_update().execution_options(populate_existing=True)
         result = await self.session.exec(query)
         integration = result.one_or_none()
 
@@ -306,7 +306,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
 
     async def assign_project(self, integration_id: UUID, project_id: UUID) -> IntegrationProjectAssignmentRead:
         """Assign a project to a project-scoped integration."""
-        integration = await self._get_or_raise(integration_id)
+        integration = await self._get_or_raise(integration_id, for_update=True)
         if integration.scope != IntegrationScope.PROJECT:
             raise IntegrationScopeError(
                 integration_id,
@@ -331,7 +331,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
             )
             self.session.add(existing)
             await self.session.flush()
-            self._queue_execution_plane_sync(integration, operation="upsert")
+            await self._queue_execution_plane_sync(integration, operation="upsert")
 
         await self.session.commit()
         return IntegrationProjectAssignmentRead(
@@ -342,7 +342,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
 
     async def unassign_project(self, integration_id: UUID, project_id: UUID) -> None:
         """Remove a project assignment from an integration."""
-        integration = await self._get_or_raise(integration_id)
+        integration = await self._get_or_raise(integration_id, for_update=True)
         if integration.scope != IntegrationScope.PROJECT:
             raise IntegrationScopeError(
                 integration_id,
@@ -362,7 +362,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
         )
         await self.session.exec(stmt)
         if existing is not None:
-            self._queue_execution_plane_sync(integration, operation="upsert")
+            await self._queue_execution_plane_sync(integration, operation="upsert")
         await self.session.commit()
 
     async def list_assigned_projects(
@@ -486,7 +486,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
         self._validate_discovered_resources(data)
         await self._sync_initial_resources(integration, data)
 
-        self._queue_execution_plane_sync(integration, operation="upsert")
+        await self._queue_execution_plane_sync(integration, operation="upsert")
 
         await self.session.commit()
 
@@ -652,43 +652,23 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
         if data.name is not None and data.name != integration.name:
             await self._raise_if_name_exists(data.name)
 
-    def _queue_execution_plane_sync(self, integration: Integration, *, operation: str) -> None:
-        """Record EP desired-state delivery in the current AO transaction."""
+    async def _queue_execution_plane_sync(
+        self, integration: Integration, *, operation: Literal["upsert", "delete"]
+    ) -> None:
+        """Increment desired state and append its frozen command in this transaction."""
         if integration.integration_type != IntegrationType.OPENSHIFT:
             return
-        configuration = integration.configuration
-        endpoint = getattr(configuration, "base_url", None)
-        namespace = getattr(configuration, "namespace", None)
-        if not endpoint or not namespace:
-            msg = "OpenShift configuration is missing its EP endpoint or namespace"
-            raise SafeValueError(msg)
-        if configuration.insecure_skip_tls_verify:
-            msg = "Execution Plane integrations require verified TLS; provide a CA certificate instead"
-            raise SafeValueError(msg)
-
-        now = datetime.now(UTC)
         integration.execution_plane_revision += 1
         integration.execution_plane_status = (
             ExecutionPlaneSyncStatus.DELETING if operation == "delete" else ExecutionPlaneSyncStatus.PENDING
         )
         integration.execution_plane_error = None
-        self.session.add(
-            ExecutionPlaneIntegrationSync(
-                integration_id=integration.id,
-                source_revision=integration.execution_plane_revision,
-                operation=operation,
-                name=integration.name,
-                endpoint=endpoint,
-                namespace=namespace,
-                created_at=now,
-                next_attempt_at=now,
-            )
-        )
+        await enqueue_integration_revision(self.session, integration, operation)
 
     async def update_integration(self, integration_id: UUID, data: IntegrationUpdate) -> IntegrationRead:
         """Apply partial updates to an integration."""
         try:
-            integration = await self._get_or_raise(integration_id)
+            integration = await self._get_or_raise(integration_id, for_update=True)
         except IntegrationNotFoundError:
             AuditEventDispatcher.dispatch(
                 IntegrationUpdateEvent(
@@ -734,7 +714,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
 
         ep_relevant_fields = {"name", "configuration", "management_credential_id", "enabled", "scope", "labels"}
         if integration.integration_type == IntegrationType.OPENSHIFT and data.model_fields_set & ep_relevant_fields:
-            self._queue_execution_plane_sync(integration, operation="upsert")
+            await self._queue_execution_plane_sync(integration, operation="upsert")
 
         await self.session.commit()
 
@@ -1271,7 +1251,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
     async def delete_integration(self, integration_id: UUID) -> None:
         """Hard-delete an integration and all linked resources."""
         try:
-            integration = await self._get_or_raise(integration_id)
+            integration = await self._get_or_raise(integration_id, for_update=True)
         except IntegrationNotFoundError:
             AuditEventDispatcher.dispatch(
                 IntegrationDeleteEvent(
@@ -1295,7 +1275,7 @@ class IntegrationService(UserReferenceResolverMixin, BaseService):
             )
         )
 
-        self._queue_execution_plane_sync(integration, operation="delete")
+        await self._queue_execution_plane_sync(integration, operation="delete")
 
         await self.session.delete(integration)
         await self.session.flush()

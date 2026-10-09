@@ -44,7 +44,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/execution_plane/v1/events': {
+  '/api/execution_plane/v1/commands': {
     parameters: {
       query?: never
       header?: never
@@ -53,11 +53,59 @@ export interface paths {
     }
     get?: never
     put?: never
-    /**
-     * Accept an Execution Plane completion event
-     * @description Persist an EP callback before acknowledging delivery to the producer.
-     */
-    post: operations['accept_execution_plane_event']
+    /** Receive Command */
+    post: operations['receive_command_api_execution_plane_v1_commands_post']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/execution_plane/v1/commands/{command_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Command */
+    get: operations['get_command_api_execution_plane_v1_commands__command_id__get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/execution_plane/v1/commands/{command_id}/children': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get Children */
+    get: operations['get_children_api_execution_plane_v1_commands__command_id__children_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/execution_plane/v1/capabilities': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Capabilities */
+    get: operations['capabilities_api_execution_plane_v1_capabilities_get']
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -69,54 +117,199 @@ export type webhooks = Record<string, never>
 export interface components {
   schemas: {
     /**
-     * EPCompletionEvent
-     * @description Authenticated result event delivered by the independent EP service.
+     * CapabilitiesRead
+     * @description Only installed revisions and handlers are advertised.
      */
-    EPCompletionEvent: {
+    CapabilitiesRead: {
       /**
-       * Event Id
-       * Format: uuid
-       */
-      event_id: string
-      /**
-       * Event Schema Version
+       * Protocol Revision
+       * @default 1
        * @constant
        */
-      event_schema_version: 1
-      /** Client Id */
-      client_id: string
+      protocol_revision?: 1
+      /** Commands */
+      commands: {
+        [key: string]: number[]
+      }
+      /** Receipt Handlers */
+      receipt_handlers: string[]
+      /** Completion Handlers */
+      completion_handlers: string[]
+    }
+    /**
+     * ChildCommandRead
+     * @description Ordered child status, optionally carrying authorized outcome recovery.
+     */
+    ChildCommandRead: {
       /**
-       * Project Id
+       * Command Id
        * Format: uuid
        */
-      project_id: string
+      command_id: string
       /**
-       * Work Id
+       * Command Type
+       * @default
+       */
+      command_type?: string
+      status: components['schemas']['CommandStatus']
+      /** Parent Command Id */
+      parent_command_id?: string | null
+      resource?: components['schemas']['ResourceReference'] | null
+      /**
+       * Latest Child Sequence
+       * @default 0
+       */
+      latest_child_sequence?: number
+      /** Delivery State */
+      delivery_state?: string | null
+      /** Handling State */
+      handling_state?: string | null
+      /** Error Code */
+      error_code?: string | null
+      /**
+       * Reconciliation Required
+       * @default false
+       */
+      reconciliation_required?: boolean
+      /** Created At */
+      created_at?: string | null
+      /** Accepted At */
+      accepted_at?: string | null
+      /** Handled At */
+      handled_at?: string | null
+      /** Parent Sequence */
+      parent_sequence: number
+      recovery_message?: components['schemas']['MessageEnvelope'] | null
+    }
+    /**
+     * ChildPage
+     * @description Bounded child page with a stable per-parent cursor.
+     */
+    ChildPage: {
+      /** Items */
+      items: components['schemas']['ChildCommandRead'][]
+      /** Next After */
+      next_after?: number | null
+    }
+    /**
+     * Command
+     * @description Immutable logical command content; persistence snapshots nested values.
+     */
+    Command: {
+      /**
+       * Command Id
        * Format: uuid
        */
-      work_id: string
-      /** Request Id */
-      request_id: string
-      /** State Revision */
-      state_revision: number
-      /**
-       * Status
-       * @enum {string}
-       */
-      status: 'completed' | 'failed' | 'cancelled'
-      /** Result */
-      result: {
+      command_id: string
+      /** Parent Command Id */
+      parent_command_id?: string | null
+      /** Command Type */
+      command_type: string
+      /** Command Revision */
+      command_revision: number
+      /** Target Url */
+      target_url: string
+      /** Callback Url */
+      callback_url: string
+      /** Payload */
+      payload: {
         [key: string]: unknown
       }
       /**
-       * Completed At
+       * Occurred At
        * Format: date-time
        */
-      completed_at: string
+      occurred_at: string
+      /** Parent Sequence */
+      parent_sequence?: number | null
+      /** Acknowledges Message Id */
+      acknowledges_message_id?: string | null
+      execution_policy?: components['schemas']['ExecutionPolicy'] | null
+    }
+    /**
+     * CommandRead
+     * @description Generic command status; deliberately has no request or private result.
+     */
+    CommandRead: {
+      /**
+       * Command Id
+       * Format: uuid
+       */
+      command_id: string
+      /**
+       * Command Type
+       * @default
+       */
+      command_type?: string
+      status: components['schemas']['CommandStatus']
+      /** Parent Command Id */
+      parent_command_id?: string | null
+      resource?: components['schemas']['ResourceReference'] | null
+      /**
+       * Latest Child Sequence
+       * @default 0
+       */
+      latest_child_sequence?: number
+      /** Delivery State */
+      delivery_state?: string | null
+      /** Handling State */
+      handling_state?: string | null
+      /** Error Code */
+      error_code?: string | null
+      /**
+       * Reconciliation Required
+       * @default false
+       */
+      reconciliation_required?: boolean
+      /** Created At */
+      created_at?: string | null
+      /** Accepted At */
+      accepted_at?: string | null
+      /** Handled At */
+      handled_at?: string | null
+    }
+    /**
+     * CommandScope
+     * @description Initiating client and exactly one project or an explicit all-project grant.
+     */
+    CommandScope: {
+      /** Client Id */
+      client_id: string
+      /** Project Id */
+      project_id: string | null
+      /**
+       * All Projects
+       * @default false
+       */
+      all_projects?: boolean
+    }
+    /**
+     * CommandStatus
+     * @description Participant-visible action status, independent of transport receipt.
+     * @enum {string}
+     */
+    CommandStatus:
+      | 'accepted'
+      | 'running'
+      | 'succeeded'
+      | 'failed'
+      | 'cancel_requested'
+      | 'cancelled'
+      | 'superseded'
+      | 'outcome_unknown'
+    /**
+     * ExecutionPolicy
+     * @description Separate bounded safe execution attempts from transport retries.
+     */
+    ExecutionPolicy: {
+      /** Timeout Seconds */
+      timeout_seconds: number
+      /** Max Attempts */
+      max_attempts?: number | null
     }
     /**
      * ExecutionTargetFacadeRead
-     * @description Safe target fields available to AO's authorized management API.
+     * @description Safe shared target fields after AO project authorization.
      */
     ExecutionTargetFacadeRead: {
       /**
@@ -143,10 +336,8 @@ export interface components {
       enabled: boolean
       /** Is Default */
       is_default: boolean
-      /** Status Message */
-      status_message?: string | null
       /** Labels */
-      labels: {
+      labels?: {
         [key: string]: string
       }
       /**
@@ -154,8 +345,11 @@ export interface components {
        * Format: date-time
        */
       created_at: string
-      /** Last Ran At */
-      last_ran_at?: string | null
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string
     }
     /**
      * ExecutionTargetListResponse
@@ -178,7 +372,7 @@ export interface components {
     }
     /**
      * KubernetesPlacement
-     * @description Kubernetes scheduling metadata returned by the Execution Plane.
+     * @description Kubernetes placement contract, independent of Kubernetes libraries.
      */
     KubernetesPlacement: {
       /**
@@ -194,8 +388,41 @@ export interface components {
       tolerations?: string[]
     }
     /**
+     * MessageEnvelope
+     * @description Signed transport identity around one logical command.
+     */
+    MessageEnvelope: {
+      /**
+       * Message Id
+       * Format: uuid
+       */
+      message_id: string
+      /**
+       * Message Type
+       * @default command.submit
+       * @constant
+       */
+      message_type?: 'command.submit'
+      /**
+       * Command Id
+       * Format: uuid
+       */
+      command_id: string
+      /**
+       * Sequence
+       * @default 0
+       */
+      sequence?: number
+      /** Source Id */
+      source_id: string
+      /** Destination Id */
+      destination_id: string
+      scope: components['schemas']['CommandScope']
+      command: components['schemas']['Command']
+    }
+    /**
      * RHELPlacement
-     * @description RHEL placement marker returned by the Execution Plane.
+     * @description Placement for a supported RHEL backend.
      */
     RHELPlacement: {
       /**
@@ -203,6 +430,44 @@ export interface components {
        * @enum {string}
        */
       type: 'rhel'
+    }
+    /**
+     * ResourceReference
+     * @description Safe reference from a command to a participant-owned resource.
+     */
+    ResourceReference: {
+      /** Kind */
+      kind: string
+      /**
+       * Resource Id
+       * Format: uuid
+       */
+      resource_id: string
+      /** Resource Key */
+      resource_key?: string | null
+      /** Revision */
+      revision?: number | null
+    }
+    /**
+     * TransportReceipt
+     * @description A successful transport response, independent of the asynchronous ACK.
+     */
+    TransportReceipt: {
+      /**
+       * Received
+       * @constant
+       */
+      received: true
+      /**
+       * Message Id
+       * Format: uuid
+       */
+      message_id: string
+      /**
+       * Duplicate
+       * @default false
+       */
+      duplicate?: boolean
     }
     /** ValidationError */
     ValidationError: {
@@ -219,7 +484,7 @@ export interface components {
     }
     /**
      * WorkItemFacadeRead
-     * @description Safe work state; internal tokens and storage metadata stay private.
+     * @description Safe shared work state after AO project authorization.
      */
     WorkItemFacadeRead: {
       /**
@@ -246,6 +511,15 @@ export interface components {
         [key: string]: unknown
       } | null
       /**
+       * Result Omitted
+       * @default false
+       */
+      result_omitted?: boolean
+      /** Result Size Bytes */
+      result_size_bytes?: number | null
+      /** Execution Target Id */
+      execution_target_id?: string | null
+      /**
        * Created At
        * Format: date-time
        */
@@ -254,6 +528,12 @@ export interface components {
       claimed_at?: string | null
       /** Completed At */
       completed_at?: string | null
+      /** Backend Resource Name */
+      backend_resource_name?: string | null
+      /** Backend Resource Uid */
+      backend_resource_uid?: string | null
+      /** Resource Cleanup Status */
+      resource_cleanup_status: string
     }
     /**
      * WorkItemListResponse
@@ -340,7 +620,7 @@ export interface operations {
       }
     }
   }
-  accept_execution_plane_event: {
+  receive_command_api_execution_plane_v1_commands_post: {
     parameters: {
       query?: never
       header?: never
@@ -349,7 +629,88 @@ export interface operations {
     }
     requestBody: {
       content: {
-        'application/json': components['schemas']['EPCompletionEvent']
+        'application/json': {
+          /**
+           * Message Id
+           * Format: uuid
+           */
+          message_id: string
+          /**
+           * Message Type
+           * @default command.submit
+           * @constant
+           */
+          message_type?: 'command.submit'
+          /**
+           * Command Id
+           * Format: uuid
+           */
+          command_id: string
+          /**
+           * Sequence
+           * @default 0
+           */
+          sequence?: number
+          /** Source Id */
+          source_id: string
+          /** Destination Id */
+          destination_id: string
+          /**
+           * CommandScope
+           * @description Initiating client and exactly one project or an explicit all-project grant.
+           */
+          scope: {
+            /** Client Id */
+            client_id: string
+            /** Project Id */
+            project_id: string | null
+            /**
+             * All Projects
+             * @default false
+             */
+            all_projects?: boolean
+          }
+          /**
+           * Command
+           * @description Immutable logical command content; persistence snapshots nested values.
+           */
+          command: {
+            /**
+             * Command Id
+             * Format: uuid
+             */
+            command_id: string
+            /** Parent Command Id */
+            parent_command_id?: string | null
+            /** Command Type */
+            command_type: string
+            /** Command Revision */
+            command_revision: number
+            /** Target Url */
+            target_url: string
+            /** Callback Url */
+            callback_url: string
+            /** Payload */
+            payload: {
+              [key: string]: unknown
+            }
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string
+            /** Parent Sequence */
+            parent_sequence?: number | null
+            /** Acknowledges Message Id */
+            acknowledges_message_id?: string | null
+            execution_policy?: {
+              /** Timeout Seconds */
+              timeout_seconds: number
+              /** Max Attempts */
+              max_attempts?: number | null
+            } | null
+          }
+        }
       }
     }
     responses: {
@@ -359,9 +720,29 @@ export interface operations {
           [name: string]: unknown
         }
         content: {
-          'application/json': {
-            [key: string]: string
-          }
+          'application/json': components['schemas']['TransportReceipt']
+        }
+      }
+    }
+  }
+  get_command_api_execution_plane_v1_commands__command_id__get: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        command_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CommandRead']
         }
       }
       /** @description Validation Error */
@@ -371,6 +752,61 @@ export interface operations {
         }
         content: {
           'application/problem+json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_children_api_execution_plane_v1_commands__command_id__children_get: {
+    parameters: {
+      query?: {
+        after?: number
+        limit?: number
+        recover?: boolean
+      }
+      header?: never
+      path: {
+        command_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ChildPage']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  capabilities_api_execution_plane_v1_capabilities_get: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CapabilitiesRead']
         }
       }
     }

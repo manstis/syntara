@@ -1,0 +1,98 @@
+{
+  "peers": [
+    {
+      "peer_id": "execution-plane",
+      "role": "executor",
+      "issuer": "urn:execution-plane",
+      "audience": "urn:execution-plane",
+      "command_url": "https://execution-plane-api:8443/v1/commands",
+      "query_base_url": "https://execution-plane-api:8443/v1",
+      "grants": {
+        "syntara-orchestration": {
+          "project_ids": null,
+          "permissions": [
+            "work.execute",
+            "cluster.register",
+            "cluster.provision",
+            "cluster.update",
+            "cluster.delete",
+            "execution_target.register",
+            "execution_target.update",
+            "execution_target.delete",
+            "command.cancel",
+            "command.accepted",
+            "commands:read",
+            "capabilities:read",
+            "work.execute.completed",
+            "cluster.register.completed",
+            "cluster.provision.completed",
+            "cluster.update.completed",
+            "cluster.delete.completed",
+            "execution_target.register.completed",
+            "execution_target.update.completed",
+            "execution_target.delete.completed",
+            "command.cancel.completed"
+          ]
+        }
+      },
+      "verification_key_paths": {
+        "primary": "ep-command.pub"
+      },
+      "permitted_networks": [
+        "10.0.0.0/8",
+        "172.16.0.0/12"
+      ],
+      "certificate_common_names": [
+        "execution-plane.ao.svc"
+      ]
+    },
+    {
+      "peer_id": "syntara-orchestration",
+      "role": "controller",
+      "issuer": "urn:syntara-orchestration",
+      "audience": "urn:syntara-orchestration",
+      "command_url": "https://syntara:8000/api/execution_plane/v1/commands",
+      "query_base_url": "https://syntara:8000/api/execution_plane/v1",
+      "grants": {
+        "syntara-orchestration": {
+          "project_ids": null,
+          "permissions": [
+            "work.execute",
+            "cluster.register",
+            "cluster.provision",
+            "cluster.update",
+            "cluster.delete",
+            "execution_target.register",
+            "execution_target.update",
+            "execution_target.delete",
+            "command.cancel",
+            "command.accepted",
+            "commands:read",
+            "capabilities:read",
+            "work.execute.completed",
+            "cluster.register.completed",
+            "cluster.provision.completed",
+            "cluster.update.completed",
+            "cluster.delete.completed",
+            "execution_target.register.completed",
+            "execution_target.update.completed",
+            "execution_target.delete.completed",
+            "command.cancel.completed"
+          ]
+        }
+      },
+      "verification_key_paths": {
+        "orchestrator-primary": "ao-jwt-public.pem"
+      },
+      "permitted_networks": [
+        "10.0.0.0/8",
+        "172.16.0.0/12"
+      ],
+      "certificate_common_names": [
+        "backend.ao.svc",
+        "worker.ao.svc",
+        "background-worker.ao.svc"
+      ]
+    }
+  ]
+}

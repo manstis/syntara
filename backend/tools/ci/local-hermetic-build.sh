@@ -24,6 +24,7 @@ PREFETCH_INPUT="${PREFETCH_INPUT:-${PREFETCH_INPUT_DEFAULT}}"
 KBC_CACHE_MODE="${KBC_CACHE_MODE:-volume}"
 KBC_STORAGE_VOLUME="${KBC_STORAGE_VOLUME:-kbc-storage-cache}"
 KBC_INCLUDE_SOURCE_REPOS="${KBC_INCLUDE_SOURCE_REPOS:-false}"
+EP_CLIENT_ARCHIVE=""
 SKIP_PREFETCH=false
 SHELL_MODE=false
 PIP_ONLY=false
@@ -38,6 +39,10 @@ GIT_COMMON_HOST_DIR=""
 while [ "$#" -gt 0 ]; do
 	arg="$1"
 	case "$arg" in
+        --ep-client-archive)
+            EP_CLIENT_ARCHIVE="$(realpath "$2")"
+            shift 2
+            ;;
 		--skip-prefetch)
 			SKIP_PREFETCH=true
 			shift
@@ -316,7 +321,23 @@ require_prefetch_outputs() {
 	fi
 }
 
+install_local_client_archive() {
+    [ -n "${EP_CLIENT_ARCHIVE}" ] || return 0
+    local verify_dir
+    verify_dir="$(mktemp -d)"
+    if ! python3 tools/ci/ep_client_source.py \
+        --archive "${EP_CLIENT_ARCHIVE}" --source-lock ep-client-source.json \
+        --destination "${verify_dir}/client"; then
+        rm -rf "${verify_dir}"
+        return 1
+    fi
+    rm -rf "${verify_dir}"
+    mkdir -p "${PREFETCH_OUTPUT_DIR}/deps/generic"
+    cp "${EP_CLIENT_ARCHIVE}" "${PREFETCH_OUTPUT_DIR}/deps/generic/execution-plane-client-source.tar.gz"
+}
+
 build_with_kbc() {
+	install_local_client_archive
 	ensure_cache_mode
 	resolve_auth_file
 	require_prefetch_outputs

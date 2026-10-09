@@ -7,6 +7,7 @@ from logging.config import fileConfig
 from typing import TYPE_CHECKING, Literal
 
 from alembic import context
+from execution_plane_client.journal.schema import build_journal_schema
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import Connection
@@ -33,7 +34,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Set target metadata from models
-target_metadata = SQLModel.metadata
+target_metadata = [SQLModel.metadata, build_journal_schema().metadata]
 
 # Schemas owned by external packages — excluded from Syntara autogenerate.
 # See docs/execution-plane/integration.md for why execution_plane is managed

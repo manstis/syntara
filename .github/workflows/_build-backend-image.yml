@@ -40,6 +40,8 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
+      - uses: ./.github/actions/setup-ep-client
+
       # Required for multi-arch builds: emulates ARM64 on the amd64 runner so
       # Docker Buildx can compile the linux/arm64 platform target natively.
       - name: Set up QEMU
@@ -74,13 +76,15 @@ jobs:
         with:
           context: backend/
           file: backend/containers/syntara/Containerfile
+          build-contexts: |
+            ep_client_source=.ep-client-source/src/execution_plane_client
           push: false
           platforms: linux/amd64,linux/arm64
           outputs: type=oci,dest=/tmp/syntara-image.tar
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=backend-${{ hashFiles('backend/ep-client-source.json') }}
+          cache-to: type=gha,mode=max,scope=backend-${{ hashFiles('backend/ep-client-source.json') }}
 
       - name: Save image tags to file
         shell: bash

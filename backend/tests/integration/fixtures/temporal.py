@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -18,7 +19,7 @@ from syntara.workflows.workflow_engine.activities.internal_activity import execu
 from syntara.workflows.workflow_engine.activities.manual_trigger import manual_trigger
 from syntara.workflows.workflow_engine.activities.runtime_settings_activity import fetch_workflow_runtime_settings
 from syntara.workflows.workflow_engine.dynamic_workflow import OrchestratorWorkflow
-from tests.fixtures.fake_execution_plane import FakeExecutionPlaneHttpClient
+from tests.fixtures.fake_execution_plane import FakeExecutionPlanePeer
 from tests.fixtures.settings import FakeSettingsCache
 
 if TYPE_CHECKING:
@@ -83,18 +84,30 @@ async def temporal_env(
     test_db_engine: AsyncEngine,
     test_session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
+    test_db_admin_url,
 ) -> AsyncGenerator[WorkflowEnvironment, None]:
     """Pair Temporal with a test double for the independently deployed EP API."""
     from syntara.workflows.workflow_engine.activities.ep import ep_dispatch_activity
 
     database_url = test_db_engine.url
     monkeypatch.setenv("APP_DATABASE_URL", database_url.render_as_string(hide_password=False))
-    monkeypatch.setattr(ep_dispatch_activity, "ExecutionPlaneHttpClient", FakeExecutionPlaneHttpClient)
+    peer = await FakeExecutionPlanePeer.create(
+        test_session_factory,
+        _temporal_server.client,
+        test_db_admin_url.set(database=database_url.database),
+    )
+    monkeypatch.setattr(ep_dispatch_activity, "AsyncSessionLocal", test_session_factory)
     with (
-        patch("syntara.execution_plane.bridge.AsyncSessionLocal", test_session_factory),
+        patch("syntara.execution_plane.commands.activities.get_ao_runtime", return_value=peer.ao),
         _temporal_server.auto_time_skipping_disabled(),
     ):
-        yield _temporal_server
+        task = asyncio.create_task(peer.run())
+        try:
+            yield _temporal_server
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await peer.close()
 
 
 @pytest_asyncio.fixture

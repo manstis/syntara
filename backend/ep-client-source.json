@@ -1,0 +1,7 @@
+{
+  "repository": "syntara-orchestration/syntara-execution-plane",
+  "revision": "eed28a265ae9107da40bc13291665237c2fc1be7",
+  "archive_url": "https://github.com/syntara-orchestration/syntara-execution-plane/releases/download/client-source-eed28a265ae9107da40bc13291665237c2fc1be7/execution-plane-client-source.tar.gz",
+  "archive_sha256": "84850a8a46c4f4d3ac6add2c4035b127f8728b6ea83f9e93db9b1585dba05bb4",
+  "package_subdirectory": "src/execution_plane_client"
+}

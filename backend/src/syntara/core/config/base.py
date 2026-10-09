@@ -1827,20 +1827,19 @@ class WorkflowClientSettings(BaseSettings):
         gt=0,
     )
 
-    ep_api_url: str | None = Field(
+    ep_command_peers_path: str | None = Field(
         default=None,
-        description="Base URL for the independently deployed Execution Plane API.",
+        description="Explicit bilateral command peer registrations and verification keys.",
     )
+    ep_participant_id: str = Field(default="syntara-orchestration")
+    ep_peer_id: str = Field(default="execution-plane")
+    ep_journal_key_id: str = Field(default="primary")
+    ep_journal_decryption_keys: dict[str, str] = Field(default_factory=dict, repr=False)
 
     ep_request_timeout_seconds: float = Field(
         default=10.0,
         description="Per-request timeout for AO to EP HTTP operations.",
         gt=0,
-    )
-
-    ep_callback_service_cn: str = Field(
-        default="execution-plane.ao.svc",
-        description="mTLS service identity permitted to deliver EP completion events.",
     )
 
     @model_validator(mode="after")

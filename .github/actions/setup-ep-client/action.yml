@@ -1,0 +1,46 @@
+---
+name: Set up execution-plane-client source
+description: Reconstruct the pinned sibling checkout for AO's local client dependency
+runs:
+  using: composite
+  steps:
+    - name: Read client source pin
+      id: pin
+      shell: bash
+      run: |
+        python3 - <<'PY'
+        import json, os, re
+        from pathlib import Path
+        pin = json.loads(Path('backend/ep-client-source.json').read_text())
+        assert re.fullmatch(r'[\w.-]+/[\w.-]+', pin['repository'])
+        assert re.fullmatch(r'[a-f0-9]{40}', pin['revision'])
+        assert pin['package_subdirectory'] == 'src/execution_plane_client'
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+            out.write(f"repository={pin['repository']}\nrevision={pin['revision']}\n")
+        PY
+    - name: Check out exact EP source revision
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      with:
+        repository: ${{ steps.pin.outputs.repository }}
+        ref: ${{ steps.pin.outputs.revision }}
+        path: .ep-client-source
+        persist-credentials: false
+    - name: Provide verified sibling layout
+      shell: bash
+      run: |
+        python3 - <<'PY'
+        import os, tomllib
+        from pathlib import Path
+        root = Path(os.environ['GITHUB_WORKSPACE'])
+        source = root / '.ep-client-source'
+        project = source / 'src/execution_plane_client/pyproject.toml'
+        assert tomllib.loads(project.read_text())['project']['name'] == 'execution-plane-client'
+        sibling = root.parent / 'syntara-execution-plane'
+        if sibling.exists() or sibling.is_symlink():
+            if sibling.resolve() != source.resolve():
+                raise SystemExit('Refusing to replace an unrelated sibling checkout')
+        else:
+            sibling.symlink_to(source, target_is_directory=True)
+        with open(os.environ['GITHUB_ENV'], 'a') as env:
+            env.write(f"EP_CLIENT_BUILD_CONTEXT={source / 'src/execution_plane_client'}\n")
+        PY

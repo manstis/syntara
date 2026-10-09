@@ -11,6 +11,7 @@ from syntara.authz.models import Project
 from syntara.core.exceptions import SafeValueError
 from syntara.core.models import User
 from syntara.core.models.user_reference import UserReference
+from syntara.core.services.secret_service import create_secret_service
 from syntara.integrations.exceptions import (
     IntegrationCredentialNotFoundError,
     IntegrationCredentialRequiredError,
@@ -136,6 +137,10 @@ class TestCreateIntegration:
         ct = await credential_factory.create_type("HTTP Bearer Token")
         project = await credential_factory.create_project()
         credential = await credential_factory.create(ct, project)
+
+        ct.injectors = {"extra_vars": {"bearer_token": "{{token}}"}}
+        credential.secret_id = await create_secret_service(test_db_session).create_secret({"token": "test-bearer"})
+        await test_db_session.flush()
 
         created = await integration_service.create_integration(
             IntegrationCreate(
@@ -740,6 +745,11 @@ class TestCredentialTypeValidation:
         ct = await credential_factory.create_type(credential_type_name)
         project = await credential_factory.create_project()
         cred = await credential_factory.create(ct, project)
+
+        if integration_type == IntegrationType.OPENSHIFT:
+            ct.injectors = {"extra_vars": {"bearer_token": "{{token}}"}}
+            cred.secret_id = await create_secret_service(test_db_session).create_secret({"token": "test-bearer"})
+            await test_db_session.flush()
 
         created = await integration_service.create_integration(
             IntegrationCreate(

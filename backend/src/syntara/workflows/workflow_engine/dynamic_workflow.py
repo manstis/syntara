@@ -55,7 +55,11 @@ from syntara.workflows.workflow_engine.models.workflow_definition import (
     NodeType,
 )
 from syntara.workflows.workflow_engine.unified_eval import safe_eval_with_namespace
-from syntara.workflows.workflow_engine.utils.loop_iteration_ids import loop_control_activity_id
+from syntara.workflows.workflow_engine.utils.loop_iteration_ids import (
+    join_loop_iteration_id,
+    loop_control_activity_id,
+    loop_index_chain,
+)
 
 # Trigger types allowed for dynamic dispatch via Temporal activities.
 # Each entry must have a corresponding @activity.defn with a matching name.
@@ -1183,7 +1187,13 @@ class OrchestratorWorkflow(WorkflowConvergeMixin, WorkflowApprovalMixin):
             await workflow.execute_activity(
                 activity_name,
                 args=args,
-                activity_id=node.id,
+                activity_id=(
+                    join_loop_iteration_id(
+                        node.id, loop_index_chain(node.id, self.loop_body_map, self.node_control_data)
+                    )
+                    if node_type == NodeType.SCRIPT
+                    else node.id
+                ),
                 start_to_close_timeout=timedelta(seconds=timeout_seconds),
                 heartbeat_timeout=heartbeat_timeout,
                 retry_policy=retry_policy,

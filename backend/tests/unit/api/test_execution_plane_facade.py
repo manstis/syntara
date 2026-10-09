@@ -27,6 +27,7 @@ def test_execution_target_facade_validates_typed_placement() -> None:
             "is_default": True,
             "labels": {},
             "created_at": "2026-10-02T00:00:00Z",
+            "updated_at": "2026-10-02T00:00:00Z",
         }
     )
 
@@ -50,5 +51,6 @@ def test_execution_target_facade_rejects_the_old_flat_namespace_contract() -> No
                 "is_default": True,
                 "labels": {},
                 "created_at": "2026-10-02T00:00:00Z",
+                "updated_at": "2026-10-02T00:00:00Z",
             }
         )

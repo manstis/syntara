@@ -73,6 +73,8 @@ from syntara.core.models.user import User
 from syntara.core.router_discovery import _get_lock_file_path, discover_and_register_routers, iter_api_routes
 from syntara.core.websocket.manager import get_connection_lifecycle_manager
 from syntara.core.websocket.router import build_websocket_router
+from syntara.execution_plane.router import create_command_router
+from syntara.execution_plane.runtime import close_ao_runtime, get_ao_runtime
 from syntara.files.health import validate_file_storage_at_startup
 from syntara.files.workers.file_cleanup import get_multipart_cleanup_worker
 from syntara.metrics.cleanup import get_metrics_cleanup_worker
@@ -224,6 +226,9 @@ async def _lifespan_startup(app: FastAPI) -> dict[str, Any]:  # noqa: PLR0915
     # cross its versioned HTTP contract through the AO-owned adapter.
     # ------------------------------------------------------------------------
     app.include_router(ep_router)
+    app.include_router(create_command_router())
+    if settings.ep_command_peers_path:
+        get_ao_runtime()
     # ========================================================================
 
     # Register WebSocket router manually (excluded from router discovery)
@@ -370,11 +375,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
         None
 
     """
-    resources = await _lifespan_startup(app)
+    resources = None
     try:
+        resources = await _lifespan_startup(app)
         yield
     finally:
-        await _lifespan_shutdown(resources)
+        await close_ao_runtime()
+        if resources is not None:
+            await _lifespan_shutdown(resources)
 
 
 # Swagger UI methods that support "Try it out" when the feature is enabled.

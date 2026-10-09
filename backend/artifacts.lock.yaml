@@ -1,6 +1,6 @@
 ---
 metadata:
-  version: "1.0"
+  version: '1.0'
 artifacts:
   - download_url: https://github.com/Kitware/CMake/releases/download/v4.3.4/cmake-4.3.4.tar.gz
     checksum: sha256:fdeff897b9eb49d764539f2b1edc6eb7e1440df325678a97c1978499e931adda
@@ -8,7 +8,6 @@ artifacts:
     checksum: sha256:6cc3e573e5ce7bef4c3af917dace755c515fc26428f42752750684201ee2b726
     filename: rego-cpp-1.5.1.tar.gz
   - download_url: https://github.com/mjp41/cmake_utils/archive/2bf98b5773ea7282197c823e205547d8c2e323c0.tar.gz
-    # FetchContent dependencies pulled by rego-cpp's cmake build (and transitively by trieste)
     checksum: sha256:c1174ac4ff41d3b68ea7b2d13b5464a61c8ea6869b7a003d07da67ac462c4032
     filename: cmake_utils.tar.gz
   - download_url: https://github.com/microsoft/trieste/archive/0920efeecaa0c56c558f5a5c7a0da865595a43b8.tar.gz
@@ -20,3 +19,6 @@ artifacts:
   - download_url: https://github.com/CLIUtils/CLI11/archive/4160d259d961cd393fd8d67590a8c7d210207348.tar.gz
     checksum: sha256:c91e8768600e61be11f7250e3cf3e71afd9d0f18f9c9e9e209a8e084ca08cd85
     filename: cli11.tar.gz
+  - download_url: https://github.com/syntara-orchestration/syntara-execution-plane/releases/download/client-source-eed28a265ae9107da40bc13291665237c2fc1be7/execution-plane-client-source.tar.gz
+    checksum: sha256:84850a8a46c4f4d3ac6add2c4035b127f8728b6ea83f9e93db9b1585dba05bb4
+    filename: execution-plane-client-source.tar.gz

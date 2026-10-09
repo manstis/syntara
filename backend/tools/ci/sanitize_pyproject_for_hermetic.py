@@ -92,12 +92,8 @@ def sanitize_pyproject(pyproject_path: Path) -> None:
             i += 1
             continue
 
-        # Konflux prefetches this VCS dependency from requirements.txt as a
-        # local source archive. Drop the Git source override so the offline
-        # lock resolves that prefetched execution-plane==version artifact.
-        if state.in_uv_sources and stripped.startswith("execution-plane ="):
-            i += 1
-            continue
+        # Keep the execution-plane-client path override: verified source is
+        # materialized at the paired path before offline dependency resolution.
 
         if _replace_tool_uv_environment(stripped, out, state):
             i += 1

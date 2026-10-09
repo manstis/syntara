@@ -3,12 +3,13 @@
 from uuid import UUID
 
 import pytest
-from sqlmodel import col, select
+from execution_plane_client.protocol import MessageEnvelope
+from sqlalchemy import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from syntara.core.models import User
 from syntara.core.services.secret_service import SecretService, create_secret_service
-from syntara.execution_plane.integration_sync_model import ExecutionPlaneIntegrationSync
+from syntara.execution_plane import runtime as runtime_module
 from syntara.integrations.exceptions import IntegrationCredentialRequiredError
 from syntara.integrations.models.integration import IntegrationCreate, IntegrationType, IntegrationUpdate
 from syntara.integrations.services.integration_service import IntegrationService
@@ -41,13 +42,24 @@ async def _make_bearer_credential(
     return UUID(str(credential.id)), secret_service
 
 
-async def _sync_rows(session: AsyncSession, integration_id: UUID) -> list[ExecutionPlaneIntegrationSync]:
-    result = await session.exec(
-        select(ExecutionPlaneIntegrationSync)
-        .where(ExecutionPlaneIntegrationSync.integration_id == integration_id)
-        .order_by(col(ExecutionPlaneIntegrationSync.source_revision))
+async def _sync_rows(session: AsyncSession, integration_id: UUID) -> list[MessageEnvelope]:
+    runtime = runtime_module.get_ao_runtime()
+    table = runtime.journal.schema.table
+    ids = (
+        (
+            await session.execute(
+                select(table.c.entry_id)
+                .where(
+                    table.c.direction == "outbound", table.c.command_type.in_(["cluster.provision", "cluster.delete"])
+                )
+                .order_by(table.c.created_at)
+            )
+        )
+        .scalars()
+        .all()
     )
-    return list(result.all())
+    messages = [await runtime.journal.load_message(session, entry_id) for entry_id in ids]
+    return [message for message in messages if message.command.payload["resource_key"] == str(integration_id)]
 
 
 class TestIntegrationSyncOutbox:
@@ -67,10 +79,10 @@ class TestIntegrationSyncOutbox:
 
         rows = await _sync_rows(test_db_session, integration.id)
         assert len(rows) == 1
-        assert rows[0].operation == "upsert"
-        assert rows[0].source_revision == 1
-        assert rows[0].name == "Test OpenShift"
-        assert rows[0].endpoint == "https://openshift.example.com:6443"
+        assert rows[0].command.command_type == "cluster.provision"
+        assert rows[0].command.payload["desired_revision"] == 1
+        assert rows[0].command.payload["name"] == "Test OpenShift"
+        assert rows[0].command.payload["endpoint"] == "https://openshift.example.com:6443"
         assert integration.execution_plane_status == "pending"
 
     @pytest.mark.asyncio
@@ -113,8 +125,8 @@ class TestIntegrationSyncOutbox:
         await service.delete_integration(integration.id)
 
         rows = await _sync_rows(test_db_session, integration.id)
-        assert [row.operation for row in rows] == ["upsert", "delete"]
-        assert rows[-1].source_revision == 2
+        assert [row.command.command_type for row in rows] == ["cluster.provision", "cluster.delete"]
+        assert rows[-1].command.payload["desired_revision"] == 2
 
     @pytest.mark.asyncio
     async def test_relevant_update_increments_the_outbox_revision(
@@ -130,8 +142,8 @@ class TestIntegrationSyncOutbox:
         await service.update_integration(integration.id, IntegrationUpdate(name="Renamed OpenShift"))
 
         rows = await _sync_rows(test_db_session, integration.id)
-        assert [row.source_revision for row in rows] == [1, 2]
-        assert rows[-1].name == "Renamed OpenShift"
+        assert [row.command.payload["desired_revision"] for row in rows] == [1, 2]
+        assert rows[-1].command.payload["name"] == "Renamed OpenShift"
 
     @pytest.mark.asyncio
     async def test_create_returns_while_ep_sync_is_pending(
@@ -146,4 +158,4 @@ class TestIntegrationSyncOutbox:
         integration = await service.create_integration(_openshift_create(credential_id=credential_id))
 
         assert integration.execution_plane_status == "pending"
-        assert (await _sync_rows(test_db_session, integration.id))[0].processed_at is None
+        assert (await _sync_rows(test_db_session, integration.id))[0].command.command_type == "cluster.provision"

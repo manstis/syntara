@@ -210,3 +210,17 @@ async def project_scoped_setup(
         "global_integration_id": global_integration_id,
         "unassigned_integration_id": unassigned_integration_id,
     }
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def ep_command_runtime(test_db_session_factory, monkeypatch):
+    """Keep integration writes on the real shared journal with injected test sessions."""
+    from syntara.execution_plane import runtime
+    from syntara.execution_plane.commands import integrations
+    from tests.integration.execution_plane.conftest import TemporalCase
+
+    case = TemporalCase(test_db_session_factory)
+    monkeypatch.setattr(runtime, "get_ao_runtime", lambda: case.runtime)
+    monkeypatch.setattr(integrations, "get_ao_runtime", lambda: case.runtime)
+    yield case.runtime
+    await case.runtime.close()

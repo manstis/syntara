@@ -149,6 +149,8 @@ services:
         BRANDING: ${BRANDING:-false}
       context: ./backend
       dockerfile: containers/syntara/Containerfile
+      additional_contexts:
+        ep_client_source: ${EP_CLIENT_BUILD_CONTEXT:-../syntara-execution-plane/src/execution_plane_client}
       target: syntara
     image: ${APP_IMAGE:-localhost/syntara:latest}
     restart: unless-stopped
@@ -171,7 +173,7 @@ services:
       - APP_S3_USE_PATH_STYLE=${APP_S3_USE_PATH_STYLE:-true}
 
       - APP_TEMPORAL_ADDRESS=temporal:7233
-      - APP_EP_API_URL=https://execution-plane-api:8443
+      - APP_EP_COMMAND_PEERS_PATH=/run/secrets/ep/command-peers.json
       - APP_TEMPORAL_NAMESPACE=default
       - APP_CACHE_HOST=redis
       - APP_CACHE_PASSWORD=${APP_CACHE_PASSWORD:-cache}
@@ -213,6 +215,9 @@ services:
       - ./backend/src:/opt/app-root/src/src:z
       - syntara_audit_exports:/data/audit-exports:z
       - ./backend/.secrets/jwt-primary.pem:/run/secrets/jwt-primary.pem:ro,z
+      - ./backend/.secrets/command-peers.json:/run/secrets/ep/command-peers.json:ro,z
+      - ./backend/.secrets/jwt-primary.pub:/run/secrets/ep/ao-jwt-public.pem:ro,z
+      - ./backend/.secrets/ep-command.pub:/run/secrets/ep/ep-command.pub:ro,z
       - ./backend/.secrets/jwt-backup.pem:/run/secrets/jwt-backup.pem:ro,z
       - ./backend/.secrets/admin-password:/run/secrets/admin-password:ro,z
       - ./backend/.secrets/encryption-key:/run/secrets/encryption-key:ro,z
@@ -262,7 +267,7 @@ services:
       - APP_SERVER_PUBLIC_URL=${APP_SERVER_PUBLIC_URL:-}
       - APP_TEMPORAL_ADDRESS=temporal:7233
       - APP_TEMPORAL_NAMESPACE=default
-      - APP_EP_API_URL=https://execution-plane-api:8443
+      - APP_EP_COMMAND_PEERS_PATH=/run/secrets/ep/command-peers.json
       - APP_TASK_QUEUE=orchestrator-workflow-queue
       # Cold-start Execution Plane node dispatch (AAP-93615). The AO activity that
       # launches a node pod runs in THIS worker, so both settings live here.
@@ -313,6 +318,9 @@ services:
       - ./backend/src:/opt/app-root/src/src:z
       - syntara_audit_exports:/data/audit-exports:z
       - ./backend/.secrets/jwt-primary.pem:/run/secrets/jwt-primary.pem:ro,z
+      - ./backend/.secrets/command-peers.json:/run/secrets/ep/command-peers.json:ro,z
+      - ./backend/.secrets/jwt-primary.pub:/run/secrets/ep/ao-jwt-public.pem:ro,z
+      - ./backend/.secrets/ep-command.pub:/run/secrets/ep/ep-command.pub:ro,z
       - ./backend/.secrets/jwt-backup.pem:/run/secrets/jwt-backup.pem:ro,z
       - ./backend/.secrets/encryption-key:/run/secrets/encryption-key:ro,z
       - ./backend/.secrets/certs/ca.pem:/run/secrets/s2s-ca.pem:ro,z
@@ -353,7 +361,7 @@ services:
       - APP_SERVER_PUBLIC_URL=${APP_SERVER_PUBLIC_URL:-}
       - APP_TEMPORAL_ADDRESS=temporal:7233
       - APP_TEMPORAL_NAMESPACE=default
-      - APP_EP_API_URL=https://execution-plane-api:8443
+      - APP_EP_COMMAND_PEERS_PATH=/run/secrets/ep/command-peers.json
       - APP_BACKGROUND_TASK_QUEUE=orchestrator-background-queue
       - APP_ENV_FILE_PATH=${APP_ENV_FILE_PATH:-.env}
       - APP_FALLBACK_LOG_LEVEL=${APP_FALLBACK_LOG_LEVEL:-INFO}
@@ -388,6 +396,9 @@ services:
     volumes:
       - ./backend/src:/opt/app-root/src/src:z
       - ./backend/.secrets/jwt-primary.pem:/run/secrets/jwt-primary.pem:ro,z
+      - ./backend/.secrets/command-peers.json:/run/secrets/ep/command-peers.json:ro,z
+      - ./backend/.secrets/jwt-primary.pub:/run/secrets/ep/ao-jwt-public.pem:ro,z
+      - ./backend/.secrets/ep-command.pub:/run/secrets/ep/ep-command.pub:ro,z
       - ./backend/.secrets/jwt-backup.pem:/run/secrets/jwt-backup.pem:ro,z
       - ./backend/.secrets/encryption-key:/run/secrets/encryption-key:ro,z
       - ./backend/.secrets/certs/ca.pem:/run/secrets/s2s-ca.pem:ro,z
@@ -429,18 +440,25 @@ services:
     ports:
       - "127.0.0.1:${EP_API_PORT:-8001}:8443"
     environment:
+      - EP_PARTICIPANT_ID=execution-plane
+      - EP_COMMAND_PEERS_PATH=/run/secrets/ep/command-peers.json
+      - EP_COMMAND_SIGNING_KEY_PATH=/run/secrets/ep/ep-command.pem
+      - EP_COMMAND_SIGNING_KEY_ID=primary
+      - EP_COMMAND_TLS_CA_PATH=/run/secrets/ep-api/ca.pem
+      - EP_COMMAND_TLS_CERT_PATH=/run/secrets/ep-api/tls.crt
+      - EP_COMMAND_TLS_KEY_PATH=/run/secrets/ep-api/tls.key
       - EP_API_HOST=0.0.0.0
       - EP_API_PORT=8443
       - EP_API_TLS_CERT_PATH=/run/secrets/ep-api/tls.crt
       - EP_API_TLS_KEY_PATH=/run/secrets/ep-api/tls.key
       - EP_API_TLS_CLIENT_CA_PATH=/run/secrets/ep-api/ca.pem
       - EP_DATABASE_URL=postgresql+asyncpg://execution_plane_runtime:${EP_DB_RUNTIME_PASSWORD:-ep-runtime}@database:5432/execution_plane
-      - EP_AO_JWT_PUBLIC_KEY_PATH=/run/secrets/ao-jwt-public.pem
-      - EP_AO_JWT_ISSUER=${APP_SERVER_PUBLIC_URL:-https://0.0.0.0:8000}
-      - EP_AO_CLIENT_ID=syntara-orchestration
       - EP_CREDENTIAL_ENCRYPTION_KEY_PATH=/run/secrets/ep-credential-encryption-key
     volumes:
-      - ./backend/.secrets/jwt-primary.pub:/run/secrets/ao-jwt-public.pem:ro,z
+      - ./backend/.secrets/command-peers.json:/run/secrets/ep/command-peers.json:ro,z
+      - ./backend/.secrets/jwt-primary.pub:/run/secrets/ep/ao-jwt-public.pem:ro,z
+      - ./backend/.secrets/ep-command.pem:/run/secrets/ep/ep-command.pem:ro,z
+      - ./backend/.secrets/ep-command.pub:/run/secrets/ep/ep-command.pub:ro,z
       - ./backend/.secrets/ep-credential-encryption-key:/run/secrets/ep-credential-encryption-key:ro,z
       - ./backend/.secrets/certs/execution-plane.crt:/run/secrets/ep-api/tls.crt:ro,z
       - ./backend/.secrets/certs/execution-plane.key:/run/secrets/ep-api/tls.key:ro,z
@@ -449,7 +467,7 @@ services:
       execution-plane-migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: [CMD, python3, -c, "import ssl,urllib.request; c=ssl.create_default_context(cafile='/run/secrets/ep-api/ca.pem'); urllib.request.urlopen('https://localhost:8443/healthz/ready',context=c)"]
+      test: [CMD, python3, -c, "import ssl,urllib.request; c=ssl.create_default_context(cafile='/run/secrets/ep-api/ca.pem'); c.load_cert_chain('/run/secrets/ep-api/tls.crt','/run/secrets/ep-api/tls.key'); urllib.request.urlopen('https://localhost:8443/healthz/ready',context=c)"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -459,21 +477,28 @@ services:
     image: ${EP_IMAGE:-localhost/execution-plane:latest}
     restart: unless-stopped
     environment:
+      - EP_PARTICIPANT_ID=execution-plane
+      - EP_COMMAND_PEERS_PATH=/run/secrets/ep/command-peers.json
+      - EP_COMMAND_SIGNING_KEY_PATH=/run/secrets/ep/ep-command.pem
+      - EP_COMMAND_SIGNING_KEY_ID=primary
+      - EP_COMMAND_TLS_CA_PATH=/run/secrets/ep-api/ca.pem
+      - EP_COMMAND_TLS_CERT_PATH=/run/secrets/ep-api/tls.crt
+      - EP_COMMAND_TLS_KEY_PATH=/run/secrets/ep-api/tls.key
       - EP_DATABASE_URL=postgresql+asyncpg://execution_plane_runtime:${EP_DB_RUNTIME_PASSWORD:-ep-runtime}@database:5432/execution_plane
       - EP_CREDENTIAL_ENCRYPTION_KEY_PATH=/run/secrets/ep-credential-encryption-key
-      - EP_COMPLETION_CALLBACK_URL=https://syntara:8000/api/execution_plane/v1/events
-      - EP_CALLBACK_CA_CERT_PATH=/run/secrets/s2s-ca.pem
-      - EP_CALLBACK_CERT_PATH=/run/secrets/ep-callback.crt
-      - EP_CALLBACK_KEY_PATH=/run/secrets/ep-callback.key
       - EP_NODE_STARTUP_SECONDS=${EP_NODE_STARTUP_SECONDS:-120}
       - EP_NODE_GRACE_SECONDS=${EP_NODE_GRACE_SECONDS:-30}
       - EP_WORKLOAD_ALLOWED_EGRESS_CIDRS=${EP_WORKLOAD_ALLOWED_EGRESS_CIDRS:-[]}
       - EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS=${EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS:-[]}
       - APP_FALLBACK_LOG_LEVEL=${APP_FALLBACK_LOG_LEVEL:-INFO}
     volumes:
-      - ./backend/.secrets/certs/ca.pem:/run/secrets/s2s-ca.pem:ro,z
-      - ./backend/.secrets/certs/execution-plane.crt:/run/secrets/ep-callback.crt:ro,z
-      - ./backend/.secrets/certs/execution-plane.key:/run/secrets/ep-callback.key:ro,z
+      - ./backend/.secrets/command-peers.json:/run/secrets/ep/command-peers.json:ro,z
+      - ./backend/.secrets/jwt-primary.pub:/run/secrets/ep/ao-jwt-public.pem:ro,z
+      - ./backend/.secrets/ep-command.pem:/run/secrets/ep/ep-command.pem:ro,z
+      - ./backend/.secrets/ep-command.pub:/run/secrets/ep/ep-command.pub:ro,z
+      - ./backend/.secrets/certs/ca.pem:/run/secrets/ep-api/ca.pem:ro,z
+      - ./backend/.secrets/certs/execution-plane.crt:/run/secrets/ep-api/tls.crt:ro,z
+      - ./backend/.secrets/certs/execution-plane.key:/run/secrets/ep-api/tls.key:ro,z
       - ./backend/.secrets/ep-credential-encryption-key:/run/secrets/ep-credential-encryption-key:ro,z
     depends_on:
       execution-plane-migrate:

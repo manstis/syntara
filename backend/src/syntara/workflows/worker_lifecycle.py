@@ -79,7 +79,18 @@ async def run_worker(start_fn: StartFn, *, worker_name: str) -> None:
         worker_service = await start_fn()
         logger.info("Temporal worker started successfully", worker=worker_name)
 
-        await shutdown_event.wait()
+        shutdown_task = asyncio.create_task(shutdown_event.wait())
+        workers_task = asyncio.create_task(worker_service.wait_finished())
+        try:
+            done, _ = await asyncio.wait({shutdown_task, workers_task}, return_when=asyncio.FIRST_COMPLETED)
+            if workers_task in done:
+                await workers_task
+                msg = "Temporal worker stopped unexpectedly"
+                raise RuntimeError(msg)
+        finally:
+            shutdown_task.cancel()
+            workers_task.cancel()
+            await asyncio.gather(shutdown_task, workers_task, return_exceptions=True)
 
     except Exception:
         logger.exception("Failed to start Temporal worker", worker=worker_name)

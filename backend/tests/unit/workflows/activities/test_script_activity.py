@@ -1,160 +1,91 @@
-"""Unit tests for AO's authenticated Execution Plane dispatch activity."""
+"""Script activities freeze durable work, then hand completion to the exchange."""
 
-from collections.abc import Generator
-from typing import ClassVar, Self
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from typing import NoReturn
+from unittest.mock import AsyncMock, MagicMock, Mock
+from uuid import UUID
 
 import pytest
 from temporalio.exceptions import ApplicationError
 
-from syntara.core.config.base import get_settings
-from syntara.execution_plane.client import ExecutionPlaneRejectedError, ExecutionPlaneUnavailableError
 from syntara.workflows.workflow_engine.activities.ep import ep_dispatch_activity as activity_module
 
-ACTIVITY_INFO_PATH = "syntara.workflows.workflow_engine.activities.ep.ep_dispatch_activity.activity.info"
 PROJECT_ID = "00000000-0000-0000-0000-000000000001"
 
 
-class _FakeEPClient:
-    """Minimal async transport double for an already-completed work item."""
-
-    responses: ClassVar[list[dict[str, object] | Exception]] = []
-    submissions: ClassVar[list[dict[str, object]]] = []
-
-    def __init__(self, *, timeout: float | None = None) -> None:
-        self.timeout = timeout
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
-
-    async def submit_work_item(self, **request: object) -> dict[str, object]:
-        self.submissions.append(request)
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-
-@pytest.fixture(autouse=True)
-def _mock_activity_context() -> Generator[MagicMock, None, None]:
-    """Provide stable Temporal metadata without an activity worker."""
-    info = MagicMock()
-    info.attempt = 1
-    info.workflow_id = "unit-workflow"
-    info.workflow_run_id = "unit-run"
-    info.activity_id = "unit-activity"
-    info.task_token = b"opaque-temporal-token"
-    with (
-        patch(ACTIVITY_INFO_PATH, return_value=info) as activity_info,
-        patch("temporalio.activity.heartbeat"),
-        patch.object(activity_module, "ExecutionPlaneHttpClient", _FakeEPClient),
-        patch.object(
-            activity_module,
-            "persist_dispatch_binding",
-            new_callable=lambda: AsyncMock(side_effect=lambda **kwargs: kwargs["payload"]),
-        ),
-        patch.object(activity_module, "mark_dispatch_accepted", new_callable=AsyncMock),
-    ):
-        _FakeEPClient.responses = []
-        _FakeEPClient.submissions = []
-        yield activity_info
-
-
-class TestScriptActivityValidation:
-    """Reject invalid requests before making an HTTP call to EP."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "input_config",
-        [
-            {},
-            {"language": "bash", "code": ""},
-            {"language": "ruby", "code": "puts 'hello'"},
-            {"language": "bash"},
-            {"code": "echo hello"},
-        ],
+@pytest.fixture
+def dispatch(monkeypatch):
+    events = []
+    info = SimpleNamespace(
+        attempt=1, workflow_id="workflow", workflow_run_id="run", activity_id="script", task_token=b"token"
     )
-    async def test_invalid_config_is_non_retryable(self, input_config: dict[str, str]) -> None:
-        """Invalid script fields fail before AO contacts the remote service."""
-        with pytest.raises(ApplicationError) as exc_info:
-            await activity_module.execute_script_activity(input_config, None, PROJECT_ID)
-        assert exc_info.value.type == "ConfigError"
-        assert exc_info.value.non_retryable is True
-        assert _FakeEPClient.submissions == []
+    monkeypatch.setattr(activity_module.activity, "info", lambda: info)
+    monkeypatch.setattr(activity_module.activity, "heartbeat", Mock())
+    settings = SimpleNamespace(
+        script_nodes_enabled=True,
+        temporal_namespace="default",
+        node_container_images={"script": "original-image"},
+        workflow_http_request_allowed_hosts=[],
+        aap_poll_interval_seconds=1,
+    )
+    monkeypatch.setattr(activity_module, "get_settings", lambda: settings)
 
-    @pytest.mark.asyncio
-    async def test_invalid_project_scope_is_non_retryable(self) -> None:
-        with pytest.raises(ApplicationError) as exc_info:
-            await activity_module.execute_script_activity({"language": "bash", "code": ":"}, None, "invalid")
-        assert exc_info.value.type == "ConfigError"
-        assert _FakeEPClient.submissions == []
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(side_effect=lambda: events.append("begin"))
+    transaction.__aexit__ = AsyncMock(side_effect=lambda *_args: events.append("commit"))
+    session = Mock(begin=Mock(return_value=transaction))
+    manager = MagicMock()
+    manager.__aenter__ = AsyncMock(return_value=session)
+    manager.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(activity_module, "AsyncSessionLocal", lambda: manager)
+    enqueue = AsyncMock(side_effect=lambda *_args, **_kwargs: events.append("enqueue"))
+    monkeypatch.setattr(activity_module, "enqueue_script", enqueue)
 
+    def handoff() -> NoReturn:
+        events.append("async")
+        msg = "complete asynchronously"
+        raise RuntimeError(msg)
 
-class TestScriptActivityDispatch:
-    """Exercise the service boundary and stable idempotency behavior."""
-
-    @pytest.mark.asyncio
-    async def test_completed_response_returns_ep_result(self) -> None:
-        expected = {"output": {"return_code": 0, "stdout": "ok\n"}}
-        _FakeEPClient.responses = [
-            {"id": "00000000-0000-0000-0000-000000000002", "status": "completed", "result": expected}
-        ]
-
-        result = await activity_module.execute_script_activity(
-            {"language": "bash", "code": "echo ok"}, None, PROJECT_ID
-        )
-
-        assert result == expected
-        assert len(_FakeEPClient.submissions) == 1
-        assert _FakeEPClient.submissions[0]["project_id"] is not None
-
-    @pytest.mark.asyncio
-    async def test_pending_response_is_accepted_for_async_completion(self) -> None:
-        _FakeEPClient.responses = [{"id": "00000000-0000-0000-0000-000000000002", "status": "pending", "result": None}]
-        with patch.object(activity_module.activity, "raise_complete_async") as complete_async:
-            result = await activity_module.execute_script_activity(
-                {"language": "bash", "code": "sleep 1"}, None, PROJECT_ID
-            )
-        assert result == {}
-        complete_async.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_rejected_request_is_non_retryable(self) -> None:
-        _FakeEPClient.responses = [ExecutionPlaneRejectedError("request rejected")]
-        with pytest.raises(ApplicationError) as exc_info:
-            await activity_module.execute_script_activity({"language": "bash", "code": ":"}, None, PROJECT_ID)
-        assert exc_info.value.type == "ExecutionPlaneRejected"
-        assert exc_info.value.non_retryable is True
-
-    @pytest.mark.asyncio
-    async def test_service_unavailability_retries_same_request_id(self) -> None:
-        _FakeEPClient.responses = [
-            ExecutionPlaneUnavailableError(),
-            {"id": "00000000-0000-0000-0000-000000000002", "status": "completed", "result": {}},
-        ]
-        with patch.object(activity_module.asyncio, "sleep", new_callable=AsyncMock):
-            await activity_module.execute_script_activity({"language": "bash", "code": ":"}, None, PROJECT_ID)
-        assert len(_FakeEPClient.submissions) == 2
-        first_id = _FakeEPClient.submissions[0]["request_id"]
-        assert _FakeEPClient.submissions[1]["request_id"] == first_id
+    monkeypatch.setattr(activity_module.activity, "raise_complete_async", handoff)
+    return SimpleNamespace(events=events, info=info, settings=settings, enqueue=enqueue)
 
 
-class TestScriptNodesGate:
-    """Keep the AO feature gate ahead of EP dispatch."""
+@pytest.mark.asyncio
+async def test_commit_precedes_async_handoff_without_http(dispatch):
+    with pytest.raises(RuntimeError, match="complete asynchronously"):
+        await activity_module.execute_script_activity({"language": "bash", "code": "echo hello"}, None, PROJECT_ID)
+    assert dispatch.events == ["begin", "enqueue", "commit", "async"]
+    payload = dispatch.enqueue.await_args.kwargs["payload"]()
+    assert payload["image"] == "original-image"
+    assert payload["invocation"]["inputs"]["code"] == "echo hello"
+    assert isinstance(dispatch.enqueue.await_args.kwargs["command_id"], UUID)
 
-    @pytest.mark.asyncio
-    async def test_disabled_raises_application_error(self) -> None:
-        settings = get_settings()
-        original = settings.script_nodes_enabled
-        object.__setattr__(settings, "script_nodes_enabled", False)
-        try:
-            with pytest.raises(ApplicationError) as exc_info:
-                await activity_module.execute_script_activity({"language": "bash", "code": "echo hi"}, None, PROJECT_ID)
-            assert exc_info.value.non_retryable is True
-            assert exc_info.value.type == "ScriptNodeDisabled"
-            assert _FakeEPClient.submissions == []
-        finally:
-            object.__setattr__(settings, "script_nodes_enabled", original)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config", [{}, {"language": "bash", "code": ""}, {"language": "ruby", "code": "puts 'hi'"}])
+async def test_invalid_input_fails_before_enqueue(dispatch, config):
+    with pytest.raises(ApplicationError) as caught:
+        await activity_module.execute_script_activity(config, None, PROJECT_ID)
+    assert caught.value.non_retryable
+    assert caught.value.type == "ConfigError"
+    dispatch.enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_script_feature_gate_precedes_enqueue(dispatch):
+    dispatch.settings.script_nodes_enabled = False
+    with pytest.raises(ApplicationError) as caught:
+        await activity_module.execute_script_activity({"language": "bash", "code": "echo hello"}, None, PROJECT_ID)
+    assert caught.value.type == "ScriptNodeDisabled"
+    dispatch.enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_activity_retry_uses_identical_command_identity(dispatch):
+    for attempt in [1, 2]:
+        dispatch.info.attempt = attempt
+        with pytest.raises(RuntimeError, match="complete asynchronously"):
+            await activity_module.execute_script_activity({"language": "bash", "code": "echo hello"}, None, PROJECT_ID)
+    first, second = dispatch.enqueue.await_args_list
+    assert first.kwargs["command_id"] == second.kwargs["command_id"]
+    assert second.kwargs["activity_attempt"] == 2

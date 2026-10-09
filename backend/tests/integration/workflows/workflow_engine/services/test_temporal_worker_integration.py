@@ -384,19 +384,22 @@ class TestWorkerSignalHandling:
         """
         # Track whether shutdown completed
         shutdown_completed = False
+        service = TemporalWorkerService("test:7233", "default", "test-queue")
 
         async def mock_start_worker() -> TemporalWorkerService:
             """Mock start_worker that returns a service without actually connecting."""
-            # Don't actually start - just return the service
-            return TemporalWorkerService(
-                temporal_address="test:7233",
-                namespace="default",
-                task_queue="test-queue",
-            )
+
+            # Model a live supervised worker until the signal cancels it.
+            async def running() -> None:
+                await asyncio.Event().wait()
+
+            service._worker_task = asyncio.create_task(running())
+            return service
 
         async def mock_stop_worker() -> None:
             """Mock stop_worker that marks shutdown as completed."""
             nonlocal shutdown_completed
+            await service.stop()
             shutdown_completed = True
 
         with (

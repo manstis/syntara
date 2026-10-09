@@ -139,43 +139,81 @@ make lint
 
 > **Note:** The API server requires Redis (`make cache-run`) for authentication and streaming. Authorization is evaluated in-process via regopy from `src/syntara/authz/rego/authz.rego`.
 
-### Execution Plane development
+### Execution Plane commands
 
-Execution Plane is an independent service in the public
-[syntara-execution-plane repository](https://github.com/syntara-orchestration/syntara-execution-plane).
-AO does not install or import the EP implementation package. The optional sibling
-checkout is used only when developing both services locally or building a local
-container image; deployed AO instances consume the configured EP image and API.
+Check out `syntara` and `syntara-execution-plane` side by side. AO depends on
+`../../syntara-execution-plane/src/execution_plane_client` from `backend/`.
+Run `make install` after preparing that checkout. Only the shared client is
+installed in AO; the EP service has its own image and database.
 
-The first iteration can keep one PostgreSQL server, but it creates a separate
-`execution_plane` database with dedicated migration and runtime roles. Configure
-`EP_REPOSITORY` if the EP checkout is not at `../syntara-execution-plane`.
+All EP actions now use durable commands. The legacy work-item writes, cluster
+binding writes and completion-event endpoint have been removed. AO's API accepts
+signed peer messages at `/api/execution_plane/v1/commands`; its Temporal worker
+runs the shared delivery/handling/reconciliation workers. Read facades retain
+project authorization. Temporal identity, attempt and task token live in encrypted
+AO-private journal context. There is no activity-binding table or separate status
+lifecycle. Migrations refuse unresolved legacy responsibility before retiring old
+tables; processed legacy outcomes remain read-only history.
 
-For host-based local development, start the supporting containers and then run
-from the Syntara repository root:
+`make secrets-generate` creates separate AO/EP signing keys and a development
+`command-peers.json` for Compose and `command-peers-host.json` for `make dev`.
+Existing files are preserved. Review their exact URLs, certificate CNs, client/project
+permissions and destination network ranges. Compose mounts the same registration
+file and public keys in both participants. AO uses `APP_EP_COMMAND_PEERS_PATH`,
+its existing JWT key (`APP_JWT_KEY_ID`, default `orchestrator-primary`), and
+verified `APP_S2S_TLS_*` settings. EP uses `EP_COMMAND_PEERS_PATH`,
+`EP_COMMAND_SIGNING_KEY_PATH`, `EP_COMMAND_SIGNING_KEY_ID` and `EP_COMMAND_TLS_*`.
+Each participant keeps its own journal encryption key; retain old decryption keys
+while journal ciphertext still references them. Certificates alone do not replace
+per-message assertions.
+
+Build the separate EP image from its checkout, then build AO with its client-only
+named context (podman-compose 1.6 or newer forwards `additional_contexts`):
 
 ```bash
-make services-up
-make dev
+cd ../syntara-execution-plane
+podman build -t localhost/execution-plane:latest .
+cd ../syntara/backend
+podman build --build-context ep_client_source=../../syntara-execution-plane/src/execution_plane_client \
+  -f containers/syntara/Containerfile --target syntara -t localhost/syntara:latest .
 ```
 
-`make dev` runs the AO API/workers and starts the EP API and worker from their
-separate repositories. The EP worker delivers completion events back to AO over
-the configured mTLS callback. Set `APP_EP_API_URL` and the EP runtime/migration
-database URLs in the backend environment when using a non-default setup.
+Both installations are non-editable. The client is not a Compose service.
+Run direct Compose commands from the AO repository root. Backend Make targets
+and CI export an absolute `EP_CLIENT_BUILD_CONTEXT` because podman-compose 1.6
+passes additional context paths relative to the invoking directory.
+The AO build keeps `backend/` as its primary context. Offline builds use the
+scratch source stage and require a checksum-verified archive prefetched by Hermeto;
+the local source override survives sanitization and never falls back to a Git or
+PyPI client dependency. `requirements.txt` omits the local client itself while
+retaining its third-party dependencies.
 
-For the complete containerized stack, build the local images and run:
+CI's `setup-ep-client` action reads `ep-client-source.json`, checks out that exact
+revision and reconstructs the sibling path without replacing unrelated checkouts.
+Update the pin only after committing EP changes:
 
 ```bash
-make build-images
-make -C backend run-all
+uv run python -m tools.ci.pin_ep_client_source \
+  --checkout ../../syntara-execution-plane \
+  --archive ../../syntara-execution-plane/dist/execution-plane-client-source.tar.gz \
+  --repository syntara-orchestration/syntara-execution-plane \
+  --archive-url 'https://github.com/syntara-orchestration/syntara-execution-plane/releases/download/client-source-{revision}/execution-plane-client-source.tar.gz'
+make sync-requirements
 ```
 
-The compose file consumes one EP image for its independent migration job, API,
-and worker containers. Production deployments should configure `EP_IMAGE` to an
-immutable image tag or digest published by the EP repository; they do not need
-the EP source checkout. The EP repository contains its own compose and Kubernetes
-base manifests and owns EP migrations, runtime configuration, and release assets.
+This produces an archive from the actual committed client tree, records its exact
+checksum, and updates `artifacts.lock.yaml`. It does not publish anything. The
+referenced revision and the **exact generated asset** must become reachable through
+the normal repository publication workflow before remote CI/hermetic prefetch can
+succeed. Do not substitute GitHub's independently generated archive for that asset.
+For an already-prefetched local offline build, supply the same verified asset:
+
+```bash
+bash tools/ci/local-hermetic-build.sh --skip-prefetch \
+  --ep-client-archive ../../syntara-execution-plane/dist/execution-plane-client-source.tar.gz
+```
+
+
 
 #### Running locally with a kind-hosted Kubernetes target
 
@@ -242,15 +280,15 @@ corresponding `<cluster-name>-control-plane` container name and update
 
 ### Execution Plane ownership and acceptance
 
-AO owns its HTTP client, authorization, integration-sync outbox, Temporal dispatch
-bindings, and durable completion inbox. EP owns its HTTP API, database, cluster
-credentials, accepted work, execution state, and completion-event outbox. The two
+AO owns authorization, integration state and private Temporal correlation. Each
+service uses the shared command journal for communication and recovery. EP owns
+its HTTP API, database, cluster credentials, accepted work and execution state. The two
 services have separate database URLs and database roles; the EP runtime has no AO
 database or Temporal configuration.
 
-The current script executor still runs scripts as child processes in the EP worker
-container. Production readiness therefore requires the separate workload-pod
-backend, network-policy enforcement, database grant verification, and end-to-end
+The EP worker dispatches workloads into separate Kubernetes Jobs over the node
+gRPC protocol. Deployment validation includes network-policy enforcement,
+database grant verification, and end-to-end
 recovery checks described in `execution-plane-service-isolation-plan.md`. The
 manifests establish independent API, worker, and migration deployments, but do
 not by themselves satisfy that workload isolation gate.

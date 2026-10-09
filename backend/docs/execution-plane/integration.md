@@ -1,63 +1,77 @@
-# Syntara and Execution Plane integration
+# Syntara and Execution Plane command exchange
 
-AO owns user authentication, authorization, the public API, Temporal workflow
-dispatch, and integration records. EP is a separately deployed service that
-owns accepted work, cluster and target state, execution attempts, result
-persistence, and completion delivery. AO calls EP through its authenticated
-versioned HTTP API. AO does not import EP persistence code, connect to the EP
-database, or run EP workers in its Temporal processes.
-
-For the first deployment, AO and EP may use the existing PostgreSQL server, but
-EP uses a distinct database with EP-owned runtime and migration roles. Neither
-service's runtime role can connect to the other service database.
+AO and EP share the independently installable `execution-plane-client` package.
+AO owns workflow authorization, Temporal correlation and integration state;
+EP owns execution, provider attempts and results. They own separate databases,
+journals and encryption keys. AO never imports or installs the EP service.
 
 ## Work and completion
 
-AO validates a script node, selects its digest-pinned image, persists an
-encrypted request binding with the Temporal task token, and submits a versioned
-invocation to EP over HTTP. It retries a lost or unavailable submission with
-the same request ID and frozen payload. EP's API stores the request in its own
-database; EP's worker dispatches it independently.
+The script activity commits a frozen `work.execute` envelope and encrypted
+private journal context (Temporal identity, attempt and task token) together. Journal workers deliver commands outside DB
+transactions. EP commits receipt and a durable `command.accepted` before HTTP
+202. Acceptance is independent of execution and never generates another ACK.
 
-The cold-start EP backend allocates a one-attempt Kubernetes Job and talks to
-the SDK node runtime only over gRPC, tunneled through the authenticated
-Kubernetes API port-forward. The gRPC protocol carries invocation data,
-progress, errors, stdout/stderr fields, and final output. EP does not create a
-workload input Secret, read Pod logs, use `exec`, or connect directly to
-Temporal. The Job/Pod lifecycle is an implementation detail of this cold-start
-backend; a future worker manager can attach to an existing worker without
-changing WorkItem semantics.
+EP commits a terminal observation and its `work.execute.completed` child
+atomically. Completion is delivered to AO's shared command ingress at
+`/api/execution_plane/v1/commands`; its callback route points back to EP.
+AO acknowledges receipt and separately completes the exact Temporal activity.
+A retry keeps the original command/payload while a generation fence replaces
+its token. Loop iterations have distinct logical activity IDs.
 
-EP commits results to a durable outbox and delivers them to AO by authenticated
-callback. AO deduplicates callbacks in its inbox and bridges the result to the
-original Temporal activity. If a callback is missing, AO can reconcile a
-terminal EP result through the status API. An uncertain gRPC outcome becomes
-`reconciliation_required`: EP does not rerun that attempt, emits the state to
-AO, and AO fails the activity with `WorkloadOutcomeUnknownError` while
-preserving EP's WorkItem for operator investigation.
+All sends and reads require registered peers, CA-verified client certificates
+and short-lived signed assertions. Scoped command/child/resource GET endpoints
+support recovery. Normal status reads contain no private payloads. Recovery
+returns the original completion envelope only to its intended peer.
 
-AO cancellation is persisted and delivered to EP by stable request ID. EP
-forwards cooperative cancellation over gRPC and only reports confirmed
-cancellation after the cold-start worker has stopped. A result received during
-the cancellation race wins.
+An ambiguous provider or Temporal RPC is observed or reported as
+`outcome_unknown`; it is not blindly retried. A Temporal completion RPC that
+might already have succeeded requires matching history before AO marks the
+journal effect handled. Cancellation is a durable `command.cancel`; cancellation
+acceptance does not prove a workload has stopped.
 
 ## Integration configuration
 
-AO remains the source of integration configuration. Its durable outbox sends
-revisioned desired state to EP over the API. EP reports observed status and
-revision; AO presents `pending`, `ready`, or a safe error while the services
-converge. The two databases do not participate in a cross-service transaction.
-Cluster-management credentials are encrypted in EP's database. Workload
-credential mounts remain out of scope until ANSTRAT-2422 establishes the
-extension contract.
+AO freezes each integration revision, including credentials and project
+assignments, into a `cluster.provision` or `cluster.delete` command. The
+provision command converges the cluster and default target. The EP also offers
+discrete cluster and execution-target registration commands. Only the current
+revision changes AO's observed UI status; older revisions are superseded and
+deletions leave EP tombstones. Draining may use a disabled credential to stop
+existing work, while provisioning enabled resources requires an enabled one.
 
-The two AO-owned status state machines are documented in:
+There is one transport journal per participant. The old integration-sync queue
+and completion inbox are retired, as is the activity-binding table. Processed legacy outcomes remain read-only
+history. Migrations refuse unresolved old delivery or resource observations;
+stop old writers before cutover and reconcile obligations before upgrading.
+Commands are the only EP mutation API; no legacy compatibility is provided.
 
-- [Activity binding status progression](activity-binding-status.md)
-- [Integration execution-plane status progression](integration-status.md)
-- [Combined status progression overview](status-progression.md)
+## Development and verification
 
-## Combined-service smoke evidence
+Use side-by-side checkouts as described in the [backend README](../../README.md).
+AO's path dependency points only to `src/execution_plane_client`. Its image
+uses that named build context, or a checksum-verified client archive for
+hermetic builds. The source lock pins committed bytes; the normal release
+workflow must publish the referenced revision and exact archive before remote
+CI can fetch it. No client service or additional image is required.
+
+Run the installed EP peer matrix from `backend` after building the EP image:
+
+```bash
+EP_BILATERAL_IMAGE=localhost/execution-plane:commands \
+  tools/scripts/run-with-testcontainers.sh -- uv run --no-sync pytest \
+  tests/integration/execution_plane/test_bilateral_commands.py
+```
+
+It uses real participant journals and handlers in separate processes/schemas,
+with controlled Temporal/provider effects. Production certificate verification
+has separate real-HTTPS tests. The complete verification record is in the EP
+repository at `docs/superpowers/plans/2026-10-09-execution-plane-client-validation.md`.
+
+The following smoke results predate the command handshake and do not validate
+this protocol. They remain evidence for the unchanged node/provider path.
+
+## Historical pre-handshake smoke evidence
 
 On 6 October 2026, the current AO and EP migration branches were run together
 against separate AO and EP databases on one PostgreSQL server and a local Kind

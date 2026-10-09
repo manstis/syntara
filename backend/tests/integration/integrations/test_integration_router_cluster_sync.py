@@ -3,11 +3,12 @@
 from uuid import UUID
 
 import pytest
+from execution_plane_client.protocol import MessageEnvelope
 from httpx import AsyncClient
-from sqlmodel import col, select
+from sqlalchemy import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from syntara.execution_plane.integration_sync_model import ExecutionPlaneIntegrationSync
+from syntara.execution_plane import runtime as runtime_module
 from syntara.integrations.models.integration import IntegrationType
 
 BASE_URL = "/api/v1/integrations"
@@ -30,13 +31,24 @@ def _payload(name: str, credential_id: UUID) -> dict[str, object]:
     }
 
 
-async def _sync_rows(session: AsyncSession, integration_id: UUID) -> list[ExecutionPlaneIntegrationSync]:
-    result = await session.exec(
-        select(ExecutionPlaneIntegrationSync)
-        .where(ExecutionPlaneIntegrationSync.integration_id == integration_id)
-        .order_by(col(ExecutionPlaneIntegrationSync.source_revision))
+async def _sync_rows(session: AsyncSession, integration_id: UUID) -> list[MessageEnvelope]:
+    runtime = runtime_module.get_ao_runtime()
+    table = runtime.journal.schema.table
+    ids = (
+        (
+            await session.execute(
+                select(table.c.entry_id)
+                .where(
+                    table.c.direction == "outbound", table.c.command_type.in_(["cluster.provision", "cluster.delete"])
+                )
+                .order_by(table.c.created_at)
+            )
+        )
+        .scalars()
+        .all()
     )
-    return list(result.all())
+    messages = [await runtime.journal.load_message(session, entry_id) for entry_id in ids]
+    return [message for message in messages if message.command.payload["resource_key"] == str(integration_id)]
 
 
 class TestOpenShiftIntegrationSyncOutbox:
@@ -58,10 +70,14 @@ class TestOpenShiftIntegrationSyncOutbox:
 
         assert body["execution_plane_status"] == "pending"
         assert len(rows) == 1
-        assert rows[0].operation == "upsert"
-        assert rows[0].source_revision == 1
-        assert rows[0].endpoint == "https://api.example.com:6443"
-        assert rows[0].namespace == "default"
+        assert rows[0].command.command_type == "cluster.provision"
+        assert rows[0].command.payload["desired_revision"] == 1
+        assert rows[0].command.payload["endpoint"] == "https://api.example.com:6443"
+        from execution_plane_client.commands.clusters import ClusterProvision
+
+        payload = ClusterProvision.model_validate(rows[0].command.payload)
+        assert payload.default_target.placement.type == "kubernetes"
+        assert payload.default_target.placement.namespace == "default"
 
     @pytest.mark.asyncio
     async def test_delete_records_a_tombstone(
@@ -80,8 +96,8 @@ class TestOpenShiftIntegrationSyncOutbox:
         assert delete_response.status_code == 204
 
         rows = await _sync_rows(test_db_session, integration_id)
-        assert [row.operation for row in rows] == ["upsert", "delete"]
-        assert rows[-1].source_revision == 2
+        assert [row.command.command_type for row in rows] == ["cluster.provision", "cluster.delete"]
+        assert rows[-1].command.payload["desired_revision"] == 2
 
     @pytest.mark.asyncio
     async def test_recreated_name_gets_a_new_independent_binding(
@@ -104,5 +120,10 @@ class TestOpenShiftIntegrationSyncOutbox:
         second_id = UUID(second.json()["id"])
 
         assert second_id != first_id
-        assert [row.operation for row in await _sync_rows(test_db_session, first_id)] == ["upsert", "delete"]
-        assert [row.operation for row in await _sync_rows(test_db_session, second_id)] == ["upsert"]
+        assert [row.command.command_type for row in await _sync_rows(test_db_session, first_id)] == [
+            "cluster.provision",
+            "cluster.delete",
+        ]
+        assert [row.command.command_type for row in await _sync_rows(test_db_session, second_id)] == [
+            "cluster.provision"
+        ]

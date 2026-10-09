@@ -75,18 +75,161 @@ paths:
       x-app-permission:
         resource: work_item
         action: read
-  /api/execution_plane/v1/events:
+  /api/execution_plane/v1/commands:
     post:
       tags:
-        - Execution Plane
-      summary: Accept an Execution Plane completion event
-      description: Persist an EP callback before acknowledging delivery to the producer.
-      operationId: accept_execution_plane_event
+        - Execution Plane Commands
+      summary: Receive Command
+      operationId: receive_command_api_execution_plane_v1_commands_post
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EPCompletionEvent'
+              properties:
+                message_id:
+                  type: string
+                  format: uuid
+                  title: Message Id
+                message_type:
+                  type: string
+                  const: command.submit
+                  title: Message Type
+                  default: command.submit
+                command_id:
+                  type: string
+                  format: uuid
+                  title: Command Id
+                sequence:
+                  type: integer
+                  minimum: 0.0
+                  title: Sequence
+                  default: 0
+                source_id:
+                  type: string
+                  maxLength: 255
+                  minLength: 1
+                  pattern: ^[A-Za-z0-9_.:@/-]+$
+                  title: Source Id
+                destination_id:
+                  type: string
+                  maxLength: 255
+                  minLength: 1
+                  pattern: ^[A-Za-z0-9_.:@/-]+$
+                  title: Destination Id
+                scope:
+                  properties:
+                    client_id:
+                      type: string
+                      maxLength: 255
+                      minLength: 1
+                      pattern: ^[A-Za-z0-9_.:@/-]+$
+                      title: Client Id
+                    project_id:
+                      anyOf:
+                        - type: string
+                          format: uuid
+                        - type: 'null'
+                      title: Project Id
+                    all_projects:
+                      type: boolean
+                      title: All Projects
+                      default: false
+                  additionalProperties: false
+                  type: object
+                  required:
+                    - client_id
+                    - project_id
+                  title: CommandScope
+                  description: Initiating client and exactly one project or an explicit all-project grant.
+                command:
+                  properties:
+                    command_id:
+                      type: string
+                      format: uuid
+                      title: Command Id
+                    parent_command_id:
+                      anyOf:
+                        - type: string
+                          format: uuid
+                        - type: 'null'
+                      title: Parent Command Id
+                    command_type:
+                      type: string
+                      pattern: ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$
+                      title: Command Type
+                    command_revision:
+                      type: integer
+                      exclusiveMinimum: 0.0
+                      title: Command Revision
+                    target_url:
+                      type: string
+                      title: Target Url
+                    callback_url:
+                      type: string
+                      title: Callback Url
+                    payload:
+                      additionalProperties: true
+                      type: object
+                      title: Payload
+                    occurred_at:
+                      type: string
+                      format: date-time
+                      title: Occurred At
+                    parent_sequence:
+                      anyOf:
+                        - type: integer
+                          exclusiveMinimum: 0.0
+                        - type: 'null'
+                      title: Parent Sequence
+                    acknowledges_message_id:
+                      anyOf:
+                        - type: string
+                          format: uuid
+                        - type: 'null'
+                      title: Acknowledges Message Id
+                    execution_policy:
+                      anyOf:
+                        - properties:
+                            timeout_seconds:
+                              type: integer
+                              exclusiveMinimum: 0.0
+                              title: Timeout Seconds
+                            max_attempts:
+                              anyOf:
+                                - type: integer
+                                  exclusiveMinimum: 0.0
+                                - type: 'null'
+                              title: Max Attempts
+                          additionalProperties: false
+                          type: object
+                          required:
+                            - timeout_seconds
+                          title: ExecutionPolicy
+                          description: Separate bounded safe execution attempts from transport retries.
+                        - type: 'null'
+                  additionalProperties: false
+                  type: object
+                  required:
+                    - command_id
+                    - command_type
+                    - command_revision
+                    - target_url
+                    - callback_url
+                    - payload
+                    - occurred_at
+                  title: Command
+                  description: Immutable logical command content; persistence snapshots nested values.
+              additionalProperties: false
+              type: object
+              required:
+                - message_id
+                - command_id
+                - source_id
+                - destination_id
+                - scope
+                - command
+              title: MessageEnvelope
+              description: Signed transport identity around one logical command.
         required: true
       responses:
         '202':
@@ -94,10 +237,35 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties:
-                  type: string
-                type: object
-                title: Response Accept Execution Plane Event
+                $ref: '#/components/schemas/TransportReceipt'
+      security:
+        - HTTPBearer: []
+      x-app-permission:
+        resource: null
+        action: null
+  /api/execution_plane/v1/commands/{command_id}:
+    get:
+      tags:
+        - Execution Plane Commands
+      summary: Get Command
+      operationId: get_command_api_execution_plane_v1_commands__command_id__get
+      security:
+        - HTTPBearer: []
+      parameters:
+        - name: command_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Command Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRead'
         '422':
           description: Validation Error
           content:
@@ -107,64 +275,402 @@ paths:
       x-app-permission:
         resource: null
         action: null
+  /api/execution_plane/v1/commands/{command_id}/children:
+    get:
+      tags:
+        - Execution Plane Commands
+      summary: Get Children
+      operationId: get_children_api_execution_plane_v1_commands__command_id__children_get
+      security:
+        - HTTPBearer: []
+      parameters:
+        - name: command_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+            title: Command Id
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+            title: After
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            maximum: 200
+            minimum: 1
+            default: 50
+            title: Limit
+        - name: recover
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+            title: Recover
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChildPage'
+        '422':
+          description: Validation Error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      x-app-permission:
+        resource: null
+        action: null
+  /api/execution_plane/v1/capabilities:
+    get:
+      tags:
+        - Execution Plane Commands
+      summary: Capabilities
+      operationId: capabilities_api_execution_plane_v1_capabilities_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapabilitiesRead'
+      security:
+        - HTTPBearer: []
+      x-app-permission:
+        resource: null
+        action: null
 components:
   schemas:
-    EPCompletionEvent:
+    CapabilitiesRead:
       properties:
-        event_id:
-          type: string
-          format: uuid
-          title: Event Id
-        event_schema_version:
+        protocol_revision:
           type: integer
           const: 1
-          title: Event Schema Version
-        client_id:
-          type: string
-          title: Client Id
-        project_id:
-          type: string
-          format: uuid
-          title: Project Id
-        work_id:
-          type: string
-          format: uuid
-          title: Work Id
-        request_id:
-          type: string
-          title: Request Id
-        state_revision:
-          type: integer
-          title: State Revision
-        status:
-          type: string
-          enum:
-            - completed
-            - failed
-            - cancelled
-          title: Status
-        result:
-          additionalProperties: true
+          title: Protocol Revision
+          default: 1
+        commands:
+          additionalProperties:
+            items:
+              type: integer
+            type: array
           type: object
-          title: Result
-        completed_at:
-          type: string
-          format: date-time
-          title: Completed At
+          title: Commands
+        receipt_handlers:
+          items:
+            type: string
+          type: array
+          title: Receipt Handlers
+        completion_handlers:
+          items:
+            type: string
+          type: array
+          title: Completion Handlers
+      additionalProperties: false
       type: object
       required:
-        - event_id
-        - event_schema_version
+        - commands
+        - receipt_handlers
+        - completion_handlers
+      title: CapabilitiesRead
+      description: Only installed revisions and handlers are advertised.
+    ChildCommandRead:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        command_type:
+          type: string
+          title: Command Type
+          default: ''
+        status:
+          $ref: '#/components/schemas/CommandStatus'
+        parent_command_id:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Parent Command Id
+        resource:
+          anyOf:
+            - $ref: '#/components/schemas/ResourceReference'
+            - type: 'null'
+        latest_child_sequence:
+          type: integer
+          minimum: 0.0
+          title: Latest Child Sequence
+          default: 0
+        delivery_state:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Delivery State
+        handling_state:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Handling State
+        error_code:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Error Code
+        reconciliation_required:
+          type: boolean
+          title: Reconciliation Required
+          default: false
+        created_at:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          title: Created At
+        accepted_at:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          title: Accepted At
+        handled_at:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          title: Handled At
+        parent_sequence:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Parent Sequence
+        recovery_message:
+          anyOf:
+            - $ref: '#/components/schemas/MessageEnvelope'
+            - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+        - command_id
+        - status
+        - parent_sequence
+      title: ChildCommandRead
+      description: Ordered child status, optionally carrying authorized outcome recovery.
+    ChildPage:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/ChildCommandRead'
+          type: array
+          title: Items
+        next_after:
+          anyOf:
+            - type: integer
+              minimum: 0.0
+            - type: 'null'
+          title: Next After
+      additionalProperties: false
+      type: object
+      required:
+        - items
+      title: ChildPage
+      description: Bounded child page with a stable per-parent cursor.
+    Command:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        parent_command_id:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          pattern: ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$
+          title: Command Type
+        command_revision:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Command Revision
+        target_url:
+          type: string
+          title: Target Url
+        callback_url:
+          type: string
+          title: Callback Url
+        payload:
+          additionalProperties: true
+          type: object
+          title: Payload
+        occurred_at:
+          type: string
+          format: date-time
+          title: Occurred At
+        parent_sequence:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0.0
+            - type: 'null'
+          title: Parent Sequence
+        acknowledges_message_id:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Acknowledges Message Id
+        execution_policy:
+          anyOf:
+            - $ref: '#/components/schemas/ExecutionPolicy'
+            - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+        - command_id
+        - command_type
+        - command_revision
+        - target_url
+        - callback_url
+        - payload
+        - occurred_at
+      title: Command
+      description: Immutable logical command content; persistence snapshots nested values.
+    CommandRead:
+      properties:
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        command_type:
+          type: string
+          title: Command Type
+          default: ''
+        status:
+          $ref: '#/components/schemas/CommandStatus'
+        parent_command_id:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Parent Command Id
+        resource:
+          anyOf:
+            - $ref: '#/components/schemas/ResourceReference'
+            - type: 'null'
+        latest_child_sequence:
+          type: integer
+          minimum: 0.0
+          title: Latest Child Sequence
+          default: 0
+        delivery_state:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Delivery State
+        handling_state:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Handling State
+        error_code:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Error Code
+        reconciliation_required:
+          type: boolean
+          title: Reconciliation Required
+          default: false
+        created_at:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          title: Created At
+        accepted_at:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          title: Accepted At
+        handled_at:
+          anyOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+          title: Handled At
+      additionalProperties: false
+      type: object
+      required:
+        - command_id
+        - status
+      title: CommandRead
+      description: Generic command status; deliberately has no request or private result.
+    CommandScope:
+      properties:
+        client_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Client Id
+        project_id:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Project Id
+        all_projects:
+          type: boolean
+          title: All Projects
+          default: false
+      additionalProperties: false
+      type: object
+      required:
         - client_id
         - project_id
-        - work_id
-        - request_id
-        - state_revision
-        - status
-        - result
-        - completed_at
-      title: EPCompletionEvent
-      description: Authenticated result event delivered by the independent EP service.
+      title: CommandScope
+      description: Initiating client and exactly one project or an explicit all-project grant.
+    CommandStatus:
+      type: string
+      enum:
+        - accepted
+        - running
+        - succeeded
+        - failed
+        - cancel_requested
+        - cancelled
+        - superseded
+        - outcome_unknown
+      title: CommandStatus
+      description: Participant-visible action status, independent of transport receipt.
+    ExecutionPolicy:
+      properties:
+        timeout_seconds:
+          type: integer
+          exclusiveMinimum: 0.0
+          title: Timeout Seconds
+        max_attempts:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0.0
+            - type: 'null'
+          title: Max Attempts
+      additionalProperties: false
+      type: object
+      required:
+        - timeout_seconds
+      title: ExecutionPolicy
+      description: Separate bounded safe execution attempts from transport retries.
     ExecutionTargetFacadeRead:
       properties:
         id:
@@ -203,11 +709,6 @@ components:
         is_default:
           type: boolean
           title: Is Default
-        status_message:
-          anyOf:
-            - type: string
-            - type: 'null'
-          title: Status Message
         labels:
           additionalProperties:
             type: string
@@ -217,12 +718,11 @@ components:
           type: string
           format: date-time
           title: Created At
-        last_ran_at:
-          anyOf:
-            - type: string
-              format: date-time
-            - type: 'null'
-          title: Last Ran At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      additionalProperties: false
       type: object
       required:
         - id
@@ -234,10 +734,10 @@ components:
         - status
         - enabled
         - is_default
-        - labels
         - created_at
+        - updated_at
       title: ExecutionTargetFacadeRead
-      description: Safe target fields available to AO's authorized management API.
+      description: Safe shared target fields after AO project authorization.
     ExecutionTargetListResponse:
       properties:
         resources:
@@ -280,6 +780,7 @@ components:
           type: string
           const: kubernetes
           title: Type
+          default: kubernetes
         namespace:
           type: string
           maxLength: 63
@@ -296,23 +797,122 @@ components:
             type: string
           type: array
           title: Tolerations
+      additionalProperties: false
       type: object
       required:
-        - type
         - namespace
       title: KubernetesPlacement
-      description: Kubernetes scheduling metadata returned by the Execution Plane.
+      description: Kubernetes placement contract, independent of Kubernetes libraries.
+    MessageEnvelope:
+      properties:
+        message_id:
+          type: string
+          format: uuid
+          title: Message Id
+        message_type:
+          type: string
+          const: command.submit
+          title: Message Type
+          default: command.submit
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        sequence:
+          type: integer
+          minimum: 0.0
+          title: Sequence
+          default: 0
+        source_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Source Id
+        destination_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Destination Id
+        scope:
+          $ref: '#/components/schemas/CommandScope'
+        command:
+          $ref: '#/components/schemas/Command'
+      additionalProperties: false
+      type: object
+      required:
+        - message_id
+        - command_id
+        - source_id
+        - destination_id
+        - scope
+        - command
+      title: MessageEnvelope
+      description: Signed transport identity around one logical command.
     RHELPlacement:
       properties:
         type:
           type: string
           const: rhel
           title: Type
+          default: rhel
+      additionalProperties: false
+      type: object
+      title: RHELPlacement
+      description: Placement for a supported RHEL backend.
+    ResourceReference:
+      properties:
+        kind:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Kind
+        resource_id:
+          type: string
+          format: uuid
+          title: Resource Id
+        resource_key:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Resource Key
+        revision:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0.0
+            - type: 'null'
+          title: Revision
+      additionalProperties: false
       type: object
       required:
-        - type
-      title: RHELPlacement
-      description: RHEL placement marker returned by the Execution Plane.
+        - kind
+        - resource_id
+      title: ResourceReference
+      description: Safe reference from a command to a participant-owned resource.
+    TransportReceipt:
+      properties:
+        received:
+          type: boolean
+          const: true
+          title: Received
+        message_id:
+          type: string
+          format: uuid
+          title: Message Id
+        duplicate:
+          type: boolean
+          title: Duplicate
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+        - received
+        - message_id
+      title: TransportReceipt
+      description: A successful transport response, independent of the asynchronous ACK.
     ValidationError:
       properties:
         loc:
@@ -365,6 +965,21 @@ components:
               type: object
             - type: 'null'
           title: Result
+        result_omitted:
+          type: boolean
+          title: Result Omitted
+          default: false
+        result_size_bytes:
+          anyOf:
+            - type: integer
+            - type: 'null'
+          title: Result Size Bytes
+        execution_target_id:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Execution Target Id
         created_at:
           type: string
           format: date-time
@@ -381,6 +996,20 @@ components:
               format: date-time
             - type: 'null'
           title: Completed At
+        backend_resource_name:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Backend Resource Name
+        backend_resource_uid:
+          anyOf:
+            - type: string
+            - type: 'null'
+          title: Backend Resource Uid
+        resource_cleanup_status:
+          type: string
+          title: Resource Cleanup Status
+      additionalProperties: false
       type: object
       required:
         - id
@@ -389,8 +1018,9 @@ components:
         - work_correlation_id
         - status
         - created_at
+        - resource_cleanup_status
       title: WorkItemFacadeRead
-      description: Safe work state; internal tokens and storage metadata stay private.
+      description: Safe shared work state after AO project authorization.
     WorkItemListResponse:
       properties:
         resources:
@@ -424,3 +1054,6 @@ components:
       description: JWT token authentication
       scheme: bearer
       bearerFormat: JWT
+    HTTPBearer:
+      type: http
+      scheme: bearer

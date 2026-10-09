@@ -67,7 +67,7 @@ class TestCancelExecution:
                 return_value=[],
             ),
             patch(
-                "syntara.workflows.services.execution_service.request_ep_cancellation_for_workflow",
+                "syntara.workflows.services.execution_service.enqueue_workflow_cancellations",
                 new_callable=AsyncMock,
                 return_value=0,
             ),
@@ -162,7 +162,7 @@ class TestCancelExecution:
 
         with (
             patch(
-                "syntara.workflows.services.execution_service.request_ep_cancellation_for_workflow",
+                "syntara.workflows.services.execution_service.enqueue_workflow_cancellations",
                 new_callable=AsyncMock,
                 return_value=0,
             ),
@@ -199,7 +199,7 @@ class TestCancelExecution:
                 return_value=[],
             ) as mock_cancel,
             patch(
-                "syntara.workflows.services.execution_service.request_ep_cancellation_for_workflow",
+                "syntara.workflows.services.execution_service.enqueue_workflow_cancellations",
                 new_callable=AsyncMock,
                 return_value=0,
             ),
@@ -243,7 +243,7 @@ class TestCancelExecution:
                 side_effect=Exception("DB unavailable"),
             ),
             patch(
-                "syntara.workflows.services.execution_service.request_ep_cancellation_for_workflow",
+                "syntara.workflows.services.execution_service.enqueue_workflow_cancellations",
                 new_callable=AsyncMock,
                 return_value=0,
             ),

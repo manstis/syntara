@@ -1,5 +1,8 @@
 # Extensions introduced by the Execution Plane repository split
 
+Historical service-split notes: callback/outbox and binding paths below were
+replaced by the [durable command exchange](integration.md).
+
 This document separates capabilities inherited from `feat/ANSTRAT-1803` from
 the code needed to make AO and EP independent services. Code links point to the
 source feature snapshot (`f5d290a`) or the current migration PR branches.

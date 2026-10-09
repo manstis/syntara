@@ -1,0 +1,196 @@
+"""Retire legacy transport while preserving completed outcome history.
+
+Custom SQL checks unresolved legacy obligations and renames the completed inbox
+into read-only domain history instead of accepting Alembic's destructive drop/create.
+New command-backed bindings and the shared journal remain untouched.
+
+Revision ID: 60718293a4b5
+Revises: 5f60718293a4
+Create Date: 2026-10-09 15:41:14.025414
+
+"""
+
+from collections.abc import Sequence
+from uuid import uuid5
+
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects import postgresql
+
+# revision identifiers, used by Alembic.
+revision: str = "60718293a4b5"
+down_revision: str | Sequence[str] | None = "5f60718293a4"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
+
+
+# CUSTOM: Preserve legacy domain history without carrying a second transport.
+def _refuse_unresolved_legacy() -> None:
+    connection = op.get_bind()
+    inspector = sa.inspect(connection)
+    tables = set(inspector.get_table_names())
+    columns = {column["name"] for column in inspector.get_columns("execution_plane_activity_bindings")}
+    cancellation = (
+        " OR (cancel_requested_at IS NOT NULL AND cancel_delivered_at IS NULL)"
+        if "cancel_delivered_at" in columns
+        else ""
+    )
+    bindings = connection.execute(
+        sa.text(
+            "SELECT count(*) FROM execution_plane_activity_bindings WHERE command_id IS NULL AND "  # noqa: S608 - constant fragments
+            "(status NOT IN ('completed', 'completed_synchronously')" + cancellation + ")"
+        )
+    ).scalar_one()
+    counts = {"bindings": bindings}
+    for name, table in (
+        ("completions", "execution_plane_completion_inbox"),
+        ("integrations", "execution_plane_integration_sync"),
+    ):
+        counts[name] = (
+            connection.execute(sa.text(f"SELECT count(*) FROM {table} WHERE processed_at IS NULL")).scalar_one()  # noqa: S608 - fixed table names
+            if table in tables
+            else 0
+        )
+    # An HTTP-delivered legacy revision may still await resource observation.
+    # New revisions carry an immutable journal command and retain their owner.
+    counts["integration_observations"] = 0
+    pending = connection.execute(
+        sa.text(
+            "SELECT id, execution_plane_revision FROM integrations "
+            "WHERE execution_plane_status IN ('pending', 'deleting')"
+        )
+    )
+    for integration_id, revision_number in pending:
+        command_id = uuid5(integration_id, f"ep-integration-revision:{revision_number}")
+        owned = connection.execute(
+            sa.text(
+                "SELECT count(*) FROM exchange_journal WHERE command_id = :command_id "
+                "AND direction = 'outbound' AND command_type IN ('cluster.provision', 'cluster.delete')"
+            ),
+            {"command_id": command_id},
+        ).scalar_one()
+        if not owned:
+            counts["integration_observations"] += 1
+    if any(counts.values()):
+        details = ", ".join(f"{name}={value}" for name, value in counts.items())
+        msg = f"Unresolved legacy EP delivery; drain or reconcile before upgrading: {details}"
+        raise RuntimeError(msg)
+
+
+def _archive_completed_outcomes() -> None:
+    op.drop_index("ix_ep_completion_inbox_delivery", table_name="execution_plane_completion_inbox")
+    op.rename_table("execution_plane_completion_inbox", "execution_plane_outcome_history")
+    for column in ("attempts", "next_attempt_at", "lease_expires_at", "last_error"):
+        op.drop_column("execution_plane_outcome_history", column)
+
+
+def _restore_completed_outcomes() -> None:
+    op.rename_table("execution_plane_outcome_history", "execution_plane_completion_inbox")
+    op.add_column(
+        "execution_plane_completion_inbox", sa.Column("attempts", sa.Integer(), nullable=False, server_default="0")
+    )
+    op.add_column(
+        "execution_plane_completion_inbox", sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True)
+    )
+    op.add_column(
+        "execution_plane_completion_inbox", sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True)
+    )
+    op.add_column("execution_plane_completion_inbox", sa.Column("last_error", sa.String(1000), nullable=True))
+    op.execute("UPDATE execution_plane_completion_inbox SET next_attempt_at = COALESCE(processed_at, received_at)")
+    op.alter_column("execution_plane_completion_inbox", "next_attempt_at", nullable=False)
+    op.create_index(
+        "ix_ep_completion_inbox_delivery",
+        "execution_plane_completion_inbox",
+        ["processed_at", "next_attempt_at", "lease_expires_at"],
+    )
+
+
+# END CUSTOM
+
+
+def upgrade() -> None:
+    """Retire transport only after its obligations have been resolved."""
+    # CUSTOM: Refuse unsafe conversion and retain terminal outcomes.
+    _refuse_unresolved_legacy()
+    _archive_completed_outcomes()
+    # END CUSTOM
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f("ix_ep_integration_sync_delivery"), table_name="execution_plane_integration_sync")
+    op.drop_table("execution_plane_integration_sync")
+    op.drop_index(op.f("ix_ep_activity_bindings_cancel_delivery"), table_name="execution_plane_activity_bindings")
+    op.drop_column("execution_plane_activity_bindings", "cancel_delivered_at")
+    op.drop_column("execution_plane_activity_bindings", "cancel_next_attempt_at")
+    op.drop_column("execution_plane_activity_bindings", "last_status_check_at")
+    op.drop_column("execution_plane_activity_bindings", "cancel_lease_expires_at")
+    op.drop_column("execution_plane_activity_bindings", "cancel_attempts")
+    op.drop_column("execution_plane_activity_bindings", "cancel_last_error")
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    """Restore legacy transport structures while retaining archived outcomes."""
+    # CUSTOM: Restore the archived table instead of creating empty history.
+    _restore_completed_outcomes()
+    # END CUSTOM
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.add_column(
+        "execution_plane_activity_bindings",
+        sa.Column("cancel_last_error", sa.VARCHAR(length=1000), autoincrement=False, nullable=True),
+    )
+    op.add_column(
+        "execution_plane_activity_bindings",
+        sa.Column("cancel_attempts", sa.INTEGER(), server_default=sa.text("0"), autoincrement=False, nullable=False),
+    )
+    op.add_column(
+        "execution_plane_activity_bindings",
+        sa.Column("cancel_lease_expires_at", postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True),
+    )
+    op.add_column(
+        "execution_plane_activity_bindings",
+        sa.Column("last_status_check_at", postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True),
+    )
+    op.add_column(
+        "execution_plane_activity_bindings",
+        sa.Column("cancel_next_attempt_at", postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True),
+    )
+    op.add_column(
+        "execution_plane_activity_bindings",
+        sa.Column("cancel_delivered_at", postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True),
+    )
+    op.create_index(
+        op.f("ix_ep_activity_bindings_cancel_delivery"),
+        "execution_plane_activity_bindings",
+        ["cancel_delivered_at", "cancel_next_attempt_at", "cancel_lease_expires_at"],
+        unique=False,
+    )
+    op.create_table(
+        "execution_plane_integration_sync",
+        sa.Column("id", sa.UUID(), autoincrement=False, nullable=False),
+        sa.Column("integration_id", sa.UUID(), autoincrement=False, nullable=False),
+        sa.Column("source_revision", sa.INTEGER(), autoincrement=False, nullable=False),
+        sa.Column("operation", sa.VARCHAR(length=16), autoincrement=False, nullable=False),
+        sa.Column("name", sa.VARCHAR(length=255), autoincrement=False, nullable=False),
+        sa.Column("endpoint", sa.VARCHAR(length=2048), autoincrement=False, nullable=False),
+        sa.Column("namespace", sa.VARCHAR(length=63), autoincrement=False, nullable=False),
+        sa.Column("attempts", sa.INTEGER(), server_default=sa.text("0"), autoincrement=False, nullable=False),
+        sa.Column("created_at", postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=False),
+        sa.Column("processed_at", postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True),
+        sa.Column("next_attempt_at", postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=False),
+        sa.Column("lease_expires_at", postgresql.TIMESTAMP(timezone=True), autoincrement=False, nullable=True),
+        sa.Column("last_error", sa.TEXT(), autoincrement=False, nullable=True),
+        sa.PrimaryKeyConstraint("id", name=op.f("execution_plane_integration_sync_pkey")),
+        sa.UniqueConstraint(
+            "integration_id",
+            "source_revision",
+            name=op.f("uq_ep_integration_sync_revision"),
+            postgresql_include=[],
+            postgresql_nulls_not_distinct=False,
+        ),
+    )
+    op.create_index(
+        op.f("ix_ep_integration_sync_delivery"),
+        "execution_plane_integration_sync",
+        ["processed_at", "next_attempt_at", "lease_expires_at"],
+        unique=False,
+    )
+    # ### end Alembic commands ###

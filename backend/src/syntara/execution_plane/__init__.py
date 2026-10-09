@@ -1,1 +1,1 @@
-"""AO-owned HTTP integration and Temporal completion bridge for EP."""
+"""AO domain integration with the shared durable command protocol."""

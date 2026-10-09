@@ -186,6 +186,19 @@ main() {
         chmod 600 "$SECRETS_DIR/ep-credential-encryption-key"
     fi
 
+    # EP signs acceptance/completion independently of AO's JWT signing key.
+    if [[ ! -f "$SECRETS_DIR/ep-command.pem" ]] || [[ "$force" == true ]]; then
+        generate_key_pair "ep-command"
+    fi
+    if [[ ! -f "$SECRETS_DIR/command-peers.json" ]]; then
+        cp "$PROJECT_ROOT/containers/execution-plane/command-peers.example.json" "$SECRETS_DIR/command-peers.json"
+        info "Review command peer URLs, grants and network ranges before startup"
+    fi
+
+    python3 "$PROJECT_ROOT/tools/prepare_ep_peer_config.py" \
+        --template "$PROJECT_ROOT/containers/execution-plane/command-peers.example.json" \
+        --output "$SECRETS_DIR/command-peers-host.json"
+
     # Prevent permissions issues once secrets are mounted to syntara containers
     chmod -R +r "${SECRETS_DIR}"
 

@@ -11,6 +11,7 @@ from functools import lru_cache
 from typing import Any, Self
 
 import structlog
+from execution_plane_client.service import MediatorService
 from temporalio.client import Client
 from temporalio.converter import DataConverter
 from temporalio.worker import Worker
@@ -19,8 +20,7 @@ from syntara.core.config.base import get_encryption_key, get_settings
 from syntara.core.database.session import AsyncSessionLocal
 from syntara.core.lib.encryption import key_from_string
 from syntara.core.tls.temporal import build_temporal_tls_config
-from syntara.execution_plane.bridge import run_completion_bridge
-from syntara.execution_plane.integration_sync import run_integration_sync_bridge
+from syntara.execution_plane.runtime import build_ao_runtime, run_ao_mediator
 from syntara.telemetry.client import flush_telemetry, initialize_telemetry
 from syntara.workflows.services.activity_update_publisher import ActivityUpdatePublisher
 from syntara.workflows.workflow_engine.activities.registry import ACTIVITY_REGISTRY
@@ -89,8 +89,7 @@ class TemporalWorkerService:
         self.client: Client | None = None
         self.worker: Worker | None = None
         self._worker_task: asyncio.Task[None] | None = None
-        self._ep_completion_task: asyncio.Task[None] | None = None
-        self._ep_integration_sync_task: asyncio.Task[None] | None = None
+        self._ep_runtime: MediatorService | None = None
         self.activity_sync_service: ActivitySyncService | None = None
 
     def _build_concurrency_config(self) -> dict[str, int]:
@@ -184,44 +183,38 @@ class TemporalWorkerService:
                 max_concurrent_activities=self.max_concurrent_activities,
             )
 
-            # Start worker in background task
-            self._worker_task = asyncio.create_task(self.worker.run())
-            self._ep_completion_task = asyncio.create_task(
-                run_completion_bridge(self.client),
-                name="ep-completion-bridge",
-            )
-            self._ep_integration_sync_task = asyncio.create_task(
-                run_integration_sync_bridge(),
-                name="ep-integration-sync-bridge",
-            )
+            # Validate exchange configuration before reporting startup success.
+            if get_settings().ep_command_peers_path:
+                self._ep_runtime = build_ao_runtime(AsyncSessionLocal, temporal_client=self.client)
+            self._worker_task = asyncio.create_task(self._run_workers(self._ep_runtime))
 
             concurrency = self._build_concurrency_config()
             logger.info("temporal_worker_started", task_queue=self.task_queue, **concurrency)
 
         except Exception:
             logger.exception("Failed to start Temporal worker")
+            await self.stop()
             raise
+
+    async def _run_workers(self, runtime: MediatorService | None) -> None:
+        if self.worker is None:
+            msg = "Temporal worker has not started"
+            raise RuntimeError(msg)
+        async with asyncio.TaskGroup() as group:
+            if runtime is not None:
+                group.create_task(run_ao_mediator(self.client, AsyncSessionLocal, service=runtime))
+            group.create_task(self.worker.run())
+
+    async def wait_finished(self) -> None:
+        """Propagate a supervised worker failure to the process lifecycle."""
+        if self._worker_task is not None:
+            await self._worker_task
 
     async def stop(self) -> None:
         """Stop the Temporal worker gracefully.
 
         Waits for in-progress tasks to complete before shutting down.
         """
-        if self._ep_completion_task is not None:
-            self._ep_completion_task.cancel()
-            try:
-                await self._ep_completion_task
-            except asyncio.CancelledError:
-                logger.info("Execution Plane completion bridge stopped")
-            self._ep_completion_task = None
-        if self._ep_integration_sync_task is not None:
-            self._ep_integration_sync_task.cancel()
-            try:
-                await self._ep_integration_sync_task
-            except asyncio.CancelledError:
-                logger.info("Execution Plane integration sync bridge stopped")
-            self._ep_integration_sync_task = None
-
         # Shutdown activity sync service first
         if self.activity_sync_service:
             await self.activity_sync_service.shutdown()
@@ -230,18 +223,22 @@ class TemporalWorkerService:
         # Unregister from global registry
         set_activity_sync_service(None)
 
+        worker_error: BaseException | None = None
         if self._worker_task:
             logger.info("Stopping Temporal worker...")
 
             # Cancel the worker task
             self._worker_task.cancel()
 
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                logger.info("Worker task cancelled successfully")
+            result = (await asyncio.gather(self._worker_task, return_exceptions=True))[0]
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                worker_error = result
 
             self._worker_task = None
+
+        if self._ep_runtime is not None:
+            await self._ep_runtime.close()
+            self._ep_runtime = None
 
         # Flush pending telemetry events after worker has fully stopped
         flush_telemetry()
@@ -250,6 +247,8 @@ class TemporalWorkerService:
         self.client = None
 
         logger.info("Temporal worker stopped")
+        if worker_error is not None:
+            raise worker_error
 
     async def __aenter__(self) -> Self:
         """Async context manager entry."""

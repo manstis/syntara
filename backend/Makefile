@@ -20,6 +20,7 @@ APP_IMAGE ?= localhost/syntara:latest
 EP_IMAGE ?= localhost/execution-plane:latest
 EP_REPOSITORY ?= ../../syntara-execution-plane
 EP_BUILD_CONTEXT ?= $(abspath $(EP_REPOSITORY))
+export EP_CLIENT_BUILD_CONTEXT ?= $(abspath $(EP_REPOSITORY)/src/execution_plane_client)
 EP_DB_MIGRATOR_PASSWORD ?= ep-migrator
 EP_DB_RUNTIME_PASSWORD ?= ep-runtime
 EP_DATABASE_MIGRATOR_URL ?= postgresql+asyncpg://execution_plane_migrator:$(EP_DB_MIGRATOR_PASSWORD)@localhost:$${APP_DB_PORT:-5432}/execution_plane
@@ -47,6 +48,7 @@ COMPOSE_FINAL_CMD := $(COMPOSE_CMD) $(COMPOSE_ARGS)
 
 # S2S mTLS configuration for local development
 S2S_TLS_VARS = \
+	APP_EP_COMMAND_PEERS_PATH="$${APP_EP_COMMAND_PEERS_PATH:-$(abspath .secrets/command-peers-host.json)}" \
 	APP_S2S_TLS_ENABLED=true \
 	APP_S2S_TLS_CA_CERT_PATH=.secrets/certs/ca.pem \
 	APP_S2S_TLS_CN_ALLOWLIST='["backend.ao.svc","worker.ao.svc","background-worker.ao.svc","temporal.ao.svc","execution-plane.ao.svc"]'
@@ -350,12 +352,16 @@ ep-migrate: check-deps ## Apply execution_plane schema migrations (separate from
 	@echo "✅ execution_plane migrations complete"
 
 .PHONY: ep-api-run ep-worker-run
-ep-api-run: check-deps _ensure-secrets ## Run the standalone Execution Plane API from its own checkout
+ep-api-run: check-deps _ensure-secrets _ensure-certs ## Run the standalone Execution Plane API from its own checkout
 	@echo "🔄 Starting Execution Plane API on port 8001..."
 	@cd $(EP_REPOSITORY) && \
 		EP_DATABASE_URL="$${EP_DATABASE_URL:-$(EP_DATABASE_RUNTIME_URL)}" \
-		EP_AO_JWT_PUBLIC_KEY_PATH="$(abspath .secrets/jwt-primary.pub)" \
-		EP_AO_JWT_ISSUER="$${EP_AO_JWT_ISSUER:-https://0.0.0.0:8000}" \
+		EP_COMMAND_PEERS_PATH="$${EP_COMMAND_PEERS_PATH:-$(abspath .secrets/command-peers-host.json)}" \
+		EP_COMMAND_SIGNING_KEY_PATH="$(abspath .secrets/ep-command.pem)" \
+		EP_COMMAND_SIGNING_KEY_ID=primary \
+		EP_COMMAND_TLS_CA_PATH="$(abspath .secrets/certs/ca.pem)" \
+		EP_COMMAND_TLS_CERT_PATH="$(abspath .secrets/certs/execution-plane.crt)" \
+		EP_COMMAND_TLS_KEY_PATH="$(abspath .secrets/certs/execution-plane.key)" \
 		EP_CREDENTIAL_ENCRYPTION_KEY_PATH="$(abspath .secrets/ep-credential-encryption-key)" \
 		EP_API_TLS_CERT_PATH="$(abspath .secrets/certs/execution-plane.crt)" \
 		EP_API_TLS_KEY_PATH="$(abspath .secrets/certs/execution-plane.key)" \
@@ -366,15 +372,17 @@ ep-worker-run: check-deps _ensure-secrets _ensure-certs ## Run the standalone Ex
 	@echo "🔄 Starting Execution Plane worker..."
 	@cd $(EP_REPOSITORY) && \
 		EP_DATABASE_URL="$${EP_DATABASE_URL:-$(EP_DATABASE_RUNTIME_URL)}" \
+		EP_COMMAND_PEERS_PATH="$${EP_COMMAND_PEERS_PATH:-$(abspath .secrets/command-peers-host.json)}" \
+		EP_COMMAND_SIGNING_KEY_PATH="$(abspath .secrets/ep-command.pem)" \
+		EP_COMMAND_SIGNING_KEY_ID=primary \
+		EP_COMMAND_TLS_CA_PATH="$(abspath .secrets/certs/ca.pem)" \
+		EP_COMMAND_TLS_CERT_PATH="$(abspath .secrets/certs/execution-plane.crt)" \
+		EP_COMMAND_TLS_KEY_PATH="$(abspath .secrets/certs/execution-plane.key)" \
 		EP_CREDENTIAL_ENCRYPTION_KEY_PATH="$(abspath .secrets/ep-credential-encryption-key)" \
-		EP_COMPLETION_CALLBACK_URL="$${EP_COMPLETION_CALLBACK_URL:-https://localhost:8000/api/execution_plane/v1/events}" \
 		EP_NODE_STARTUP_SECONDS="$${EP_NODE_STARTUP_SECONDS:-120}" \
 		EP_NODE_GRACE_SECONDS="$${EP_NODE_GRACE_SECONDS:-30}" \
 		EP_WORKLOAD_ALLOWED_EGRESS_CIDRS="$${EP_WORKLOAD_ALLOWED_EGRESS_CIDRS:-[]}" \
 		EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS="$${EP_WORKLOAD_FORBIDDEN_EGRESS_CIDRS:-[]}" \
-		EP_CALLBACK_CA_CERT_PATH="$(abspath .secrets/certs/ca.pem)" \
-		EP_CALLBACK_CERT_PATH="$(abspath .secrets/certs/execution-plane.crt)" \
-		EP_CALLBACK_KEY_PATH="$(abspath .secrets/certs/execution-plane.key)" \
 		uv run python -m execution_plane.worker
 
 # Database
@@ -494,7 +502,7 @@ generate-token: _ensure-secrets ## Generate a JWT token for testing (ROLE=creato
 
 .PHONY: _ensure-secrets
 _ensure-secrets:
-	@if [ ! -f .secrets/jwt-primary.pem ] || [ ! -f .secrets/jwt-backup.pem ] || [ ! -f .secrets/admin-password ] || [ ! -f .secrets/encryption-key ]; then \
+	@if [ ! -f .secrets/jwt-primary.pem ] || [ ! -f .secrets/jwt-backup.pem ] || [ ! -f .secrets/admin-password ] || [ ! -f .secrets/encryption-key ] || [ ! -f .secrets/ep-command.pem ] || [ ! -f .secrets/command-peers.json ] || [ ! -f .secrets/command-peers-host.json ]; then \
 		echo "🔐 Generating secrets..."; \
 		./tools/generate_secrets.sh; \
 	fi
@@ -798,7 +806,7 @@ reachability: ## Verify all standards docs are reachable from CLAUDE.md
 .PHONY: sync-requirements
 sync-requirements: ## Check/sync requirements.txt with uv.lock
 	@echo "🔍 Syncing requirements.txt with uv.lock..."
-	uv export --frozen --python=3.12 --no-dev --no-editable --no-emit-package pywin32 --no-emit-package colorama --no-emit-workspace --output-file requirements.txt
+	uv export --frozen --python=3.12 --no-dev --no-editable --no-emit-package pywin32 --no-emit-package colorama --no-emit-package execution-plane-client --no-emit-workspace --output-file requirements.txt
 	@echo "🔧 Filtering hashes to Linux x86_64/aarch64 only (for Hermeto prefetch)..."
 	uv run python tools/ci/filter_requirements_hashes.py
 	@echo "✅ requirements.txt is in sync"

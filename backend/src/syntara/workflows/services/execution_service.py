@@ -25,7 +25,7 @@ from syntara.core.models import User
 from syntara.core.services import BaseService
 from syntara.core.services.extensions import ConvertResourceMixin, EnrichQueryMixin
 from syntara.core.services.user_reference_resolution import UserReferenceResolverMixin
-from syntara.execution_plane.bridge import request_ep_cancellation_for_workflow
+from syntara.execution_plane.commands.activities import enqueue_workflow_cancellations
 from syntara.metrics.dependencies import get_metrics_recorder
 from syntara.metrics.emission import emit_completion_metrics
 from syntara.metrics.interface_tag import interface_context_var
@@ -1124,11 +1124,14 @@ class ExecutionService(UserReferenceResolverMixin, BaseService):
         try:
             # Keep cancellation intent durable before asking Temporal to cancel;
             # the bridge retries it if EP is unreachable or submission is in flight.
-            pending_ep_cancellations = await request_ep_cancellation_for_workflow(execution.temporal_workflow_id)
+            pending_ep_cancellations = await enqueue_workflow_cancellations(
+                self.session, execution.temporal_workflow_id
+            )
+            await self.session.commit()
             logger.info(
                 "Persisted Execution Plane cancellation intent",
                 execution_id=str(execution.id),
-                pending_bindings=pending_ep_cancellations,
+                pending_commands=pending_ep_cancellations,
             )
             await self.temporal_service.cancel_workflow(temporal_workflow_id=execution.temporal_workflow_id)
         except Exception as exc:

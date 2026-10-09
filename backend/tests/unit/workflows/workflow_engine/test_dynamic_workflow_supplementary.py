@@ -1484,3 +1484,25 @@ class TestArePredecessorsCompleteAnyStrategy:
         wf.resolver.set_namespace("node_b", {"status": "failed"})
 
         assert wf._are_predecessors_complete("converge", graph) is True
+
+
+@pytest.mark.asyncio
+async def test_script_loop_iterations_have_distinct_durable_activity_identities() -> None:
+    """Reusing a node ID would attach the next iteration to a completed EP command."""
+    wf = _make_workflow()
+    wf.loop_body_map = {"script": "inner", "inner": "outer"}
+    wf.node_control_data = {"outer": {"current_index": 2}, "inner": {"current_index": 0}}
+    with (
+        patch(
+            "syntara.workflows.workflow_engine.dynamic_workflow.workflow.execute_activity",
+            new=AsyncMock(return_value={"output": {}}),
+        ) as execute,
+        patch("syntara.workflows.workflow_engine.dynamic_workflow.resolve_retry_policy", return_value=None),
+    ):
+        for index in range(2):
+            wf.node_control_data["inner"]["current_index"] = index
+            await wf._execute_executor_node(ActivityNode("script", "script", {}), "script", {}, None, 30)
+    assert [call.kwargs["activity_id"] for call in execute.await_args_list] == [
+        "script_iter_2_iter_0",
+        "script_iter_2_iter_1",
+    ]

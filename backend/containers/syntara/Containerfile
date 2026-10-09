@@ -1,12 +1,15 @@
 # Downstream override layer — digest injected by Konflux build-nudge.
 # Defaults to scratch (empty, built-in) so builds without --build-arg succeed.
 ARG DOWNSTREAM_OVERRIDE=scratch
+ARG EP_CLIENT_SOURCE=scratch
 ARG BRANDING=false
 ARG BUILDER_IMAGE=registry.access.redhat.com/ubi9/python-312:latest
 ARG CONTAINER_IMAGE_VERSION=""
 ARG APP_SEGMENT_WRITE_KEY=""
 
 FROM ${DOWNSTREAM_OVERRIDE} AS override
+FROM ${EP_CLIENT_SOURCE} AS ep_client_source
+COPY ep-client-source.json /source-context-marker.json
 
 # ── builder-base: uv + project metadata ────────────────────────────────────
 # Keep this shared stage minimal; compilation tools are installed by
@@ -30,10 +33,15 @@ WORKDIR /opt/app-root/src
 RUN (command -v uv >/dev/null 2>&1 || pip3.12 install --no-cache-dir uv==0.12.3) \
     && [ -f /usr/local/bin/uv ] || { command -v uv && ln -s "$(command -v uv)" /usr/local/bin/uv; }
 
-# Workspace root metadata for Syntara. Konflux prefetches the pinned EP Git
-# dependency from requirements.txt into PIP_FIND_LINKS; the hermetic lock uses
-# that local source archive after the sanitizer drops the VCS source override.
-COPY pyproject.toml uv.lock LICENSE ./
+# AO resolves only the client project at the same relative path as local development.
+COPY pyproject.toml uv.lock LICENSE ep-client-source.json ./
+COPY tools/ci/ep_client_source.py /usr/local/bin/ep_client_source.py
+COPY --from=ep_client_source / /tmp/ep-client-source/
+RUN python3.12 /usr/local/bin/ep_client_source.py \
+      --local /tmp/ep-client-source \
+      --archive /cachi2/output/deps/generic/execution-plane-client-source.tar.gz \
+      --source-lock /opt/app-root/src/ep-client-source.json \
+      --destination /opt/syntara-execution-plane/src/execution_plane_client
 
 
 # ── syntara-builder: regopy (C/C++) + full workspace ────────────────────────
@@ -87,7 +95,7 @@ RUN if [ -n "${PIP_FIND_LINKS:-}" ]; then \
         UV_FIND_LINKS="${PIP_FIND_LINKS}" \
         uv sync --frozen --no-dev --no-editable --no-index --find-links "${PIP_FIND_LINKS}" --offline; \
     else \
-        uv sync --frozen --no-dev; \
+        uv sync --frozen --no-dev --no-editable; \
     fi
 
 
