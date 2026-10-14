@@ -143,8 +143,9 @@ make lint
 
 Execution Plane is an independent service in the public
 [syntara-execution-plane repository](https://github.com/syntara-orchestration/syntara-execution-plane).
-AO installs the separate `execution-plane-client` contract library, pinned to a
-Git commit in `pyproject.toml` and `uv.lock`; `make install` fetches it automatically.
+AO installs the separate `execution-plane-client` contract library from the
+upstream `v0.1.0` Git tag declared in `pyproject.toml`. `uv.lock` records the resolved
+commit for reproducibility; `make install` fetches it automatically.
 `make sync-requirements` exports hashed packages to `requirements.txt` and pinned
 Git packages to `requirements-vcs.txt` for Hermeto's separate prefetch passes.
 Offline builds extract the client package from that prefetched Git archive.

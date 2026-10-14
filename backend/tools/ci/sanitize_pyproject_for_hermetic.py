@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tarfile
 import tomllib
@@ -81,7 +82,20 @@ def _prefetched_client_source(pyproject_path: Path) -> str | None:
     if "git" not in source:
         return None
     repository = Path(urlsplit(source["git"]).path).stem
-    archive_path = Path(os.environ["PIP_FIND_LINKS"]) / f"{repository}-gitcommit-{source['rev']}.tar.gz"
+    lock = tomllib.loads(pyproject_path.with_name("uv.lock").read_text())
+    locked_source = next(
+        (
+            package.get("source", {}).get("git", "")
+            for package in lock.get("package", [])
+            if package.get("name") == "execution-plane-client"
+        ),
+        "",
+    )
+    commit = urlsplit(locked_source).fragment
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        msg = "execution-plane-client must have a resolved Git commit in uv.lock"
+        raise ValueError(msg)
+    archive_path = Path(os.environ["PIP_FIND_LINKS"]) / f"{repository}-gitcommit-{commit}.tar.gz"
     subdirectory = Path(source["subdirectory"])
     if subdirectory.is_absolute() or ".." in subdirectory.parts:
         msg = "Client subdirectory must stay inside the prefetched repository"

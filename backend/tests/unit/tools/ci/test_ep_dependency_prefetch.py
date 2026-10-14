@@ -8,6 +8,8 @@ import tarfile
 import tomllib
 from pathlib import Path
 
+import pytest
+
 BACKEND = Path(__file__).resolve().parents[4]
 
 
@@ -29,14 +31,19 @@ def test_split_vcs_requirements_keeps_hashed_packages_separate(tmp_path):
     assert "--hash" not in vcs
 
 
-def test_hermetic_source_uses_prefetched_client_subdirectory(tmp_path):
+@pytest.mark.parametrize("reference", ['rev="main"', 'tag="v0.1.0"'])
+def test_hermetic_source_uses_prefetched_client_subdirectory(tmp_path, reference):
     commit = "a" * 40
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
         '[project]\nname="ao"\nversion="0.1.0"\ndependencies=["execution-plane-client"]\n'
         "[tool.uv.sources]\n"
         'execution-plane-client = {git="https://github.com/example/ep.git", '
-        f'rev="{commit}", subdirectory="src/client"}}\n'
+        f'{reference}, subdirectory="src/client"}}\n'
+    )
+    (tmp_path / "uv.lock").write_text(
+        '[[package]]\nname="execution-plane-client"\nversion="0.1.0"\n'
+        f'source = {{git="https://github.com/example/ep.git?subdirectory=src%2Fclient#{commit}"}}\n'
     )
     archives = tmp_path / "archives"
     archives.mkdir()
