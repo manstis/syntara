@@ -65,6 +65,8 @@ async def test_completion_command_resolves_temporal_activity_and_acknowledges(ca
     assert response.status_code == 202, response.text
     assert response.json()["message_id"] == str(message.message_id)
     assert response.json()["received"] is True
+    assert response.json()["resource"]["kind"] == "work_item"
+    assert response.json()["resource"]["resource_id"] == str(message.command.parent_command_id)
     validate.assert_called_once()
     if outcome == "succeeded":
         temporal.complete_async_activity.assert_awaited_once_with(
@@ -92,7 +94,9 @@ async def test_completion_rejects_wrong_participant(callback, field):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid", ["parent", "resource", "revision", "type"])
+@pytest.mark.parametrize(
+    "invalid", ["parent", "resource", "resource_kind", "revision", "type", "unknown_type", "status", "result"]
+)
 async def test_completion_rejects_invalid_correlation_or_command(callback, invalid):
     app, temporal, _ = callback
     body = completion().model_dump(mode="json")
@@ -101,6 +105,14 @@ async def test_completion_rejects_invalid_correlation_or_command(callback, inval
         command["parent_command_id"] = None
     elif invalid == "resource":
         command["payload"]["resource"]["resource_id"] = str(uuid4())
+    elif invalid == "resource_kind":
+        command["payload"]["resource"]["kind"] = "cluster"
+    elif invalid == "status":
+        command["payload"]["status"] = "running"
+    elif invalid == "result":
+        command["payload"]["result"] = []
+    elif invalid == "unknown_type":
+        command["command_type"] = "unknown.command"
     elif invalid == "revision":
         command["command_revision"] = 2
     else:
@@ -110,6 +122,7 @@ async def test_completion_rejects_invalid_correlation_or_command(callback, inval
         response = await client.post("/api/execution_plane/v1/events", json=body)
     assert response.status_code == 422
     temporal.complete_async_activity.assert_not_awaited()
+    temporal.fail_async_activity.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -119,3 +132,17 @@ async def test_completion_missing_activity_remains_retryable(callback):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://ao") as client:
         response = await client.post("/api/execution_plane/v1/events", json=completion().model_dump(mode="json"))
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_completion_without_resource_uses_parent_command_id(callback):
+    app, temporal, _ = callback
+    message = completion()
+    body = message.model_dump(mode="json")
+    body["command"]["payload"].pop("resource")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://ao") as client:
+        response = await client.post("/api/execution_plane/v1/events", json=body)
+    assert response.status_code == 202, response.text
+    assert response.json()["resource"]["kind"] == "work_item"
+    assert response.json()["resource"]["resource_id"] == str(message.command.parent_command_id)
+    temporal.complete_async_activity.assert_awaited_once()
