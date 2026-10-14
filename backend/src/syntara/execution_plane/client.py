@@ -10,6 +10,8 @@ from uuid import UUID, uuid4
 
 import httpx
 import jwt
+from execution_plane_client.commands.control import CancelCommand
+from execution_plane_client.protocol import MessageEnvelope, TransportReceipt
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -21,10 +23,7 @@ from syntara.core.tls.http_client import build_internal_http_client
 EP_CLIENT_ID = "syntara-orchestration"
 EP_AUDIENCE = "execution-plane"
 EP_TOKEN_LIFETIME_SECONDS = 300
-EP_SCOPES = (
-    "work-items:submit work-items:read work-items:cancel execution-targets:read "
-    "cluster-bindings:write cluster-bindings:read"
-)
+EP_SCOPES = "work.execute command.cancel cluster.register work-items:read execution-targets:read clusters:read"
 
 
 class ExecutionPlaneError(RuntimeError):
@@ -42,9 +41,12 @@ class ExecutionPlaneUnavailableError(ExecutionPlaneError):
 class ExecutionPlaneRejectedError(ExecutionPlaneError):
     """Raised when EP rejects an invalid or unauthorized request."""
 
-    def __init__(self, message: str = "Execution Plane rejected the request") -> None:
-        """Describe a non-retryable request failure."""
+    def __init__(
+        self, message: str = "Execution Plane rejected the request", *, status_code: int | None = None
+    ) -> None:
+        """Retain HTTP status so callers can recover existing domain resources."""
         super().__init__(message)
+        self.status_code = status_code
 
 
 def create_ep_service_token() -> str:
@@ -93,33 +95,32 @@ class ExecutionPlaneHttpClient:
         """Close the HTTP connection pool."""
         await self._client.aclose()
 
-    async def submit_work_item(
-        self,
-        *,
-        item_id: UUID,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Submit work using the ActivityExecution UUID as the stable work item identity."""
-        response = await self._request(
-            "POST",
-            "/v1/work-items",
-            json_body={
-                "id": str(item_id),
-                "workload_type": "script",
-                "payload": payload,
-            },
-        )
-        return self._as_object(response)
+    async def submit_command(self, message: MessageEnvelope) -> TransportReceipt:
+        """Send a shared command and require its matching transport receipt."""
+        response = await self._request("POST", "/v1/commands", json_body=message.model_dump(mode="json"))
+        try:
+            receipt = TransportReceipt.model_validate(response)
+        except ValueError:
+            msg = "Execution Plane returned an invalid command receipt"
+            raise ExecutionPlaneRejectedError(msg) from None
+        if receipt.message_id != message.message_id:
+            msg = "Execution Plane returned a receipt for a different message"
+            raise ExecutionPlaneRejectedError(msg)
+        return receipt
 
     async def get_work_item(self, *, work_item_id: UUID) -> dict[str, Any]:
         """Read accepted work by its UUID."""
         response = await self._request("GET", f"/v1/work-items/{work_item_id}")
         return self._as_object(response)
 
-    async def cancel_work_item(self, *, work_item_id: UUID) -> dict[str, Any]:
-        """Request cancellation of a work item by its UUID."""
-        response = await self._request("POST", f"/v1/work-items/{work_item_id}/cancel")
-        return self._as_object(response)
+    async def cancel_work_item(self, *, work_item_id: UUID) -> TransportReceipt:
+        """Request cancellation through the shared command contract."""
+        message = CancelCommand(target_command_id=work_item_id).to_message(
+            source_id=EP_CLIENT_ID,
+            destination_id=EP_AUDIENCE,
+            client_id=EP_CLIENT_ID,
+        )
+        return await self.submit_command(message)
 
     async def list_work_items(self, *, limit: int = 50) -> list[dict[str, Any]]:
         """List a bounded page of work items for this AO client."""
@@ -131,46 +132,9 @@ class ExecutionPlaneHttpClient:
         response = await self._request("GET", "/v1/execution-targets", params={"limit": limit})
         return self._as_list(response)
 
-    async def upsert_cluster_binding(
-        self,
-        *,
-        source_integration_id: UUID,
-        revision: int,
-        name: str,
-        endpoint: str,
-        namespace: str,
-        credential: str,
-        ca_certificate: str | None = None,
-        insecure_skip_tls_verify: bool = False,
-        project_ids: list[UUID] | None,
-        labels: dict[str, str],
-        enabled: bool,
-    ) -> dict[str, Any]:
-        """Send a versioned integration desired state to EP over mTLS."""
-        response = await self._request(
-            "PUT",
-            f"/v1/cluster-bindings/{source_integration_id}",
-            json_body={
-                "revision": revision,
-                "name": name,
-                "endpoint": endpoint,
-                "namespace": namespace,
-                "credential": credential,
-                "ca_certificate": ca_certificate,
-                "insecure_skip_tls_verify": insecure_skip_tls_verify,
-                "project_ids": [str(pid) for pid in project_ids] if project_ids is not None else None,
-                "labels": labels,
-                "enabled": enabled,
-            },
-        )
-        if response is None or isinstance(response, list):
-            msg = "Execution Plane returned an invalid cluster-binding response"
-            raise ExecutionPlaneRejectedError(msg)
-        return response
-
     async def get_cluster_binding(self, *, source_integration_id: UUID) -> dict[str, Any]:
         """Read the safe observed state of an integration binding from EP."""
-        response = await self._request("GET", f"/v1/cluster-bindings/{source_integration_id}")
+        response = await self._request("GET", f"/v1/clusters/{source_integration_id}")
         if response is None or isinstance(response, list):
             msg = "Execution Plane returned an invalid cluster-binding response"
             raise ExecutionPlaneRejectedError(msg)
@@ -205,7 +169,7 @@ class ExecutionPlaneHttpClient:
                 error_body = exc.response.json()
                 if isinstance(error_body, dict):
                     detail = str(error_body.get("detail", detail))
-            raise ExecutionPlaneRejectedError(detail) from exc
+            raise ExecutionPlaneRejectedError(detail, status_code=exc.response.status_code) from exc
         except httpx.RequestError as exc:
             raise ExecutionPlaneUnavailableError from exc
         if response.status_code == HTTPStatus.NO_CONTENT:

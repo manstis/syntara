@@ -143,7 +143,12 @@ make lint
 
 Execution Plane is an independent service in the public
 [syntara-execution-plane repository](https://github.com/syntara-orchestration/syntara-execution-plane).
-AO does not install or import the EP implementation package. The optional sibling
+AO installs the separate `execution-plane-client` contract library, pinned to a
+Git commit in `pyproject.toml` and `uv.lock`; `make install` fetches it automatically.
+`make sync-requirements` exports hashed packages to `requirements.txt` and pinned
+Git packages to `requirements-vcs.txt` for Hermeto's separate prefetch passes.
+Offline builds extract the client package from that prefetched Git archive.
+It does not install or import the EP implementation package. The optional sibling
 checkout is used only when developing both services locally or building a local
 container image; deployed AO instances consume the configured EP image and API.
 
@@ -160,7 +165,7 @@ make dev
 ```
 
 `make dev` runs the AO API/workers and starts the EP API and worker from their
-separate repositories. The EP worker delivers completion events back to AO over
+separate repositories. The EP worker delivers completion commands back to AO over
 the configured mTLS callback. Set `APP_EP_API_URL` and the EP runtime/migration
 database URLs in the backend environment when using a non-default setup.
 
@@ -242,11 +247,27 @@ corresponding `<cluster-name>-control-plane` container name and update
 
 ### Execution Plane ownership and acceptance
 
-AO owns its HTTP client, authorization, integration-sync outbox, Temporal dispatch
-bindings, and durable completion inbox. EP owns its HTTP API, database, cluster
+AO owns its HTTP client, authorization, integration-sync outbox, and Temporal
+activity completion. EP owns its HTTP API, database, cluster
 credentials, accepted work, execution state, and completion-event outbox. The two
 services have separate database URLs and database roles; the EP runtime has no AO
 database or Temporal configuration.
+
+AO constructs typed commands using `execution-plane-client` and sends their
+`to_message()` envelopes to `POST /v1/commands`. Work uses the ActivityExecution
+UUID as its command UUID. Receipts acknowledge handling; AO queries the work
+resource for state and recovers that same resource after a duplicate submission.
+
+`ExecutionPlaneIntegrationSync` remains the durable integration outbox. Each row
+sends a `ClusterRegister` command with its stable row UUID, creation time, and
+source revision. Full desired state, including disabled deletion records, allows
+EP's ClusterBinding reconciler to handle creation, updates and deletion even
+when requests arrive out of order. Observed status comes from `/v1/clusters/{id}`.
+
+The existing `/api/execution_plane/v1/events` callback URL now accepts
+`work.execute.completed` command envelopes. AO verifies the EP certificate and
+participant identities, resolves the parent work UUID to its Temporal activity,
+and returns a matching `TransportReceipt`. No command history is persisted.
 
 The current script executor still runs scripts as child processes in the EP worker
 container. Production readiness therefore requires the separate workload-pod

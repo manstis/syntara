@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
+from execution_plane_client.commands.work import NodeInvocation, WorkExecute
 from sqlmodel import select
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -14,6 +16,8 @@ from temporalio.exceptions import ApplicationError
 from syntara.core.config.base import get_settings
 from syntara.core.database.session import AsyncSessionLocal
 from syntara.execution_plane.client import (
+    EP_AUDIENCE,
+    EP_CLIENT_ID,
     ExecutionPlaneHttpClient,
     ExecutionPlaneRejectedError,
     ExecutionPlaneUnavailableError,
@@ -32,6 +36,8 @@ from syntara.workflows.workflow_engine.models.workflow_definition import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from execution_plane_client.protocol import MessageEnvelope
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -85,12 +91,32 @@ async def _lookup_activity_execution_id(execution_id: uuid.UUID, temporal_activi
     return row.id
 
 
+async def _submit_and_read_work(client: ExecutionPlaneHttpClient, message: MessageEnvelope) -> dict[str, Any]:
+    """Recover work after duplicate submission; receipts contain no work state."""
+    try:
+        receipt = await client.submit_command(message)
+    except ExecutionPlaneRejectedError as exc:
+        if exc.status_code != HTTPStatus.CONFLICT:
+            raise
+        # A prior POST may have committed before its response was lost.
+        # The ActivityExecution UUID identifies the same work on every retry.
+    else:
+        if (
+            receipt.resource is None
+            or receipt.resource.kind != "work_item"
+            or receipt.resource.resource_id != message.command_id
+        ):
+            msg = "Execution Plane receipt does not identify the submitted work"
+            raise ExecutionPlaneRejectedError(msg)
+    return await client.get_work_item(work_item_id=message.command_id)
+
+
 async def _dispatch_to_ep(  # noqa: C901, PLR0915 - service handoff and Temporal retry policy
     input_config: dict[str, Any],
     output_config: dict[str, str] | None,
     execution_id: uuid.UUID,
 ) -> dict[str, Any] | None:
-    """Persist AO's dispatch intent, then idempotently submit it to EP over HTTP."""
+    """Submit a stable work command and recover existing work after an ambiguous retry."""
     settings = get_settings()
     info = activity.info()
     workflow_id = info.workflow_id
@@ -105,11 +131,20 @@ async def _dispatch_to_ep(  # noqa: C901, PLR0915 - service handoff and Temporal
     if not image:
         msg = f"No Execution Plane container image configured for node type '{_NODE_TYPE}'"
         raise ApplicationError(msg, type="ConfigError", non_retryable=True)
-    payload = {
-        "invocation": _build_invocation(input_config, settings, info),
-        "image": image,
-        "output_config": output_config,
-    }
+    try:
+        message = WorkExecute(
+            invocation=NodeInvocation.model_validate(_build_invocation(input_config, settings, info)),
+            image=image,
+            output_config=output_config,
+        ).to_message(
+            source_id=EP_CLIENT_ID,
+            destination_id=EP_AUDIENCE,
+            client_id=EP_CLIENT_ID,
+            command_id=work_item_id,
+        )
+    except ValueError:
+        msg = "Script invocation is invalid for the Execution Plane command protocol"
+        raise ApplicationError(msg, type="ConfigError", non_retryable=True) from None
 
     timeout_seconds = float(input_config.get(ENGINE_TIMEOUT_SECONDS_KEY, 300))
     loop = asyncio.get_running_loop()
@@ -124,10 +159,7 @@ async def _dispatch_to_ep(  # noqa: C901, PLR0915 - service handoff and Temporal
 
         try:
             async with ExecutionPlaneHttpClient(timeout=min(settings.ep_request_timeout_seconds, remaining)) as client:
-                response = await client.submit_work_item(
-                    item_id=work_item_id,
-                    payload=payload,
-                )
+                response = await _submit_and_read_work(client, message)
         except ExecutionPlaneRejectedError as exc:
             raise ApplicationError(str(exc), type="ExecutionPlaneRejected", non_retryable=True) from exc
         except ExecutionPlaneUnavailableError as exc:

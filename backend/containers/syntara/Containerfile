@@ -30,9 +30,9 @@ WORKDIR /opt/app-root/src
 RUN (command -v uv >/dev/null 2>&1 || pip3.12 install --no-cache-dir uv==0.12.3) \
     && [ -f /usr/local/bin/uv ] || { command -v uv && ln -s "$(command -v uv)" /usr/local/bin/uv; }
 
-# Workspace root metadata for Syntara. Konflux prefetches the pinned EP Git
-# dependency from requirements.txt into PIP_FIND_LINKS; the hermetic lock uses
-# that local source archive after the sanitizer drops the VCS source override.
+# Workspace root metadata for Syntara. Konflux prefetches the pinned EP client
+# Git dependency from requirements-vcs.txt into PIP_FIND_LINKS. The sanitizer
+# extracts its package subdirectory and points the offline lock at that source.
 COPY pyproject.toml uv.lock LICENSE ./
 
 

@@ -79,14 +79,14 @@ paths:
     post:
       tags:
         - Execution Plane
-      summary: Accept an Execution Plane completion event
-      description: Complete the AO async activity named by an EP completion callback; EP retries until 2xx.
+      summary: Accept an Execution Plane completion command
+      description: Authenticate a completion command and acknowledge it after Temporal delivery.
       operationId: accept_execution_plane_event
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/EPCompletionEvent'
+              $ref: '#/components/schemas/MessageEnvelope'
         required: true
       responses:
         '202':
@@ -94,10 +94,7 @@ paths:
           content:
             application/json:
               schema:
-                additionalProperties:
-                  type: string
-                type: object
-                title: Response Accept Execution Plane Event
+                $ref: '#/components/schemas/TransportReceipt'
         '422':
           description: Validation Error
           content:
@@ -109,54 +106,58 @@ paths:
         action: null
 components:
   schemas:
-    EPCompletionEvent:
+    Command:
       properties:
-        event_id:
+        command_id:
           type: string
           format: uuid
-          title: Event Id
-        event_schema_version:
+          title: Command Id
+        parent_command_id:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Parent Command Id
+        command_type:
+          type: string
+          pattern: ^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$
+          title: Command Type
+        command_revision:
           type: integer
-          const: 1
-          title: Event Schema Version
-        client_id:
-          type: string
-          title: Client Id
-        work_id:
-          type: string
-          format: uuid
-          title: Work Id
-        state_revision:
-          type: integer
-          title: State Revision
-        status:
-          type: string
-          enum:
-            - completed
-            - failed
-            - cancelled
-            - reconciliation_required
-          title: Status
-        result:
+          exclusiveMinimum: 0.0
+          title: Command Revision
+        payload:
           additionalProperties: true
           type: object
-          title: Result
-        completed_at:
+          title: Payload
+        occurred_at:
           type: string
           format: date-time
-          title: Completed At
+          title: Occurred At
+      additionalProperties: false
       type: object
       required:
-        - event_id
-        - event_schema_version
+        - command_id
+        - command_type
+        - command_revision
+        - payload
+        - occurred_at
+      title: Command
+      description: One versioned operation; participants persist only its domain effects.
+    CommandScope:
+      properties:
+        client_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Client Id
+      additionalProperties: false
+      type: object
+      required:
         - client_id
-        - work_id
-        - state_revision
-        - status
-        - result
-        - completed_at
-      title: EPCompletionEvent
-      description: Authenticated result event delivered by the independent EP service.
+      title: CommandScope
+      description: Initiating service client; project authorization belongs to the caller.
     ExecutionTargetFacadeRead:
       properties:
         id:
@@ -294,6 +295,53 @@ components:
         - namespace
       title: KubernetesPlacement
       description: Kubernetes scheduling metadata returned by the Execution Plane.
+    MessageEnvelope:
+      properties:
+        message_id:
+          type: string
+          format: uuid
+          title: Message Id
+        message_type:
+          type: string
+          const: command.submit
+          title: Message Type
+          default: command.submit
+        command_id:
+          type: string
+          format: uuid
+          title: Command Id
+        sequence:
+          type: integer
+          minimum: 0.0
+          title: Sequence
+          default: 0
+        source_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Source Id
+        destination_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Destination Id
+        scope:
+          $ref: '#/components/schemas/CommandScope'
+        command:
+          $ref: '#/components/schemas/Command'
+      additionalProperties: false
+      type: object
+      required:
+        - message_id
+        - command_id
+        - source_id
+        - destination_id
+        - scope
+        - command
+      title: MessageEnvelope
+      description: Participant identity around one logical command.
     RHELPlacement:
       properties:
         type:
@@ -305,6 +353,58 @@ components:
         - type
       title: RHELPlacement
       description: RHEL placement marker returned by the Execution Plane.
+    ResourceReference:
+      properties:
+        kind:
+          type: string
+          maxLength: 255
+          minLength: 1
+          pattern: ^[A-Za-z0-9_.:@/-]+$
+          title: Kind
+        resource_id:
+          type: string
+          format: uuid
+          title: Resource Id
+        resource_key:
+          anyOf:
+            - type: string
+              format: uuid
+            - type: 'null'
+          title: Resource Key
+        revision:
+          anyOf:
+            - type: integer
+              exclusiveMinimum: 0.0
+            - type: 'null'
+          title: Revision
+      additionalProperties: false
+      type: object
+      required:
+        - kind
+        - resource_id
+      title: ResourceReference
+      description: Safe reference from a command to a participant-owned resource.
+    TransportReceipt:
+      properties:
+        received:
+          type: boolean
+          const: true
+          title: Received
+          default: true
+        message_id:
+          type: string
+          format: uuid
+          title: Message Id
+        resource:
+          anyOf:
+            - $ref: '#/components/schemas/ResourceReference'
+            - type: 'null'
+      additionalProperties: false
+      type: object
+      required:
+        - message_id
+      title: TransportReceipt
+      description: Receipt of a handled request, without a persisted command record.
     ValidationError:
       properties:
         loc:

@@ -7,7 +7,13 @@ import contextlib
 import json
 import os
 import sys
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
+
+from execution_plane_client.commands.work import WorkExecute
+from execution_plane_client.protocol import MessageEnvelope, ResourceReference, TransportReceipt
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 
 class FakeExecutionPlaneHttpClient:
@@ -16,6 +22,7 @@ class FakeExecutionPlaneHttpClient:
     def __init__(self, *, timeout: float | None = None) -> None:
         """Accept the production client's request timeout configuration."""
         self.timeout = timeout
+        self.work_items: dict[UUID, dict[str, Any]] = {}
 
     async def __aenter__(self) -> Self:
         """Mirror the production client's async context-manager contract."""
@@ -24,19 +31,19 @@ class FakeExecutionPlaneHttpClient:
     async def __aexit__(self, *_: object) -> None:
         """Close no resources because the test transport is in-process."""
 
-    async def submit_work_item(
-        self,
-        *,
-        item_id: object,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        """Execute the submitted fixture payload and return the public EP response shape."""
-        result, status = await execute_fixture_script(payload)
-        return {
-            "id": str(item_id),
-            "status": status,
-            "result": result,
-        }
+    async def submit_command(self, message: MessageEnvelope) -> TransportReceipt:
+        """Execute the shared work command and return its receipt."""
+        payload = WorkExecute.model_validate(message.command.payload)
+        result, status = await execute_fixture_script(payload.model_dump(mode="json"))
+        self.work_items[message.command_id] = {"id": str(message.command_id), "status": status, "result": result}
+        return TransportReceipt(
+            message_id=message.message_id,
+            resource=ResourceReference(kind="work_item", resource_id=message.command_id),
+        )
+
+    async def get_work_item(self, *, work_item_id: UUID) -> dict[str, Any]:
+        """Read the separate resource state following a command receipt."""
+        return self.work_items[work_item_id]
 
 
 async def execute_fixture_script(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:

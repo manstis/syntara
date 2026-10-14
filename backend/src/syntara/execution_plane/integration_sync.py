@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from execution_plane_client.commands.clusters import ClusterRegister
 from sqlalchemy import or_
 from sqlmodel import col, select
 
@@ -15,7 +16,12 @@ from syntara.core.database.session import AsyncSessionLocal
 from syntara.core.services.secret_service import create_secret_service
 from syntara.credentials.exceptions import CredentialDisabledError
 from syntara.credentials.lib.injector_resolver import InjectorResolver
-from syntara.execution_plane.client import ExecutionPlaneHttpClient, ExecutionPlaneUnavailableError
+from syntara.execution_plane.client import (
+    EP_AUDIENCE,
+    EP_CLIENT_ID,
+    ExecutionPlaneHttpClient,
+    ExecutionPlaneUnavailableError,
+)
 from syntara.execution_plane.integration_sync_model import ExecutionPlaneIntegrationSync
 from syntara.integrations.lib.credential_resolver import fetch_credential_with_type
 from syntara.integrations.models.integration import (
@@ -102,20 +108,17 @@ async def _desired_payload(row: ExecutionPlaneIntegrationSync) -> dict[str, Any]
             labels = dict(integration.labels or {})
             labels.update({"integration_id": str(integration.id), "integration_name": integration.name})
             return {
-                "revision": integration.execution_plane_revision,
                 "name": integration.name,
                 "endpoint": configuration.base_url,
                 "namespace": configuration.namespace,
                 "credential": secret,
                 "ca_certificate": configuration.ca_certificate,
-                "insecure_skip_tls_verify": configuration.insecure_skip_tls_verify,
                 "project_ids": project_ids,
                 "labels": labels,
                 "enabled": integration.enabled,
             }
 
         return {
-            "revision": row.source_revision,
             "name": row.name,
             "endpoint": row.endpoint,
             "namespace": row.namespace,
@@ -159,8 +162,21 @@ async def _deliver(row: ExecutionPlaneIntegrationSync) -> None:
         if payload is None:
             await _mark_outbox(row.id, delivered=True)
             return
+        # Register replaces the complete desired state, including disabled tombstones.
+        # A deletion can arrive before creation, so it must also create the binding.
+        message = ClusterRegister(
+            resource_key=row.integration_id,
+            desired_revision=row.source_revision,
+            **payload,
+        ).to_message(
+            source_id=EP_CLIENT_ID,
+            destination_id=EP_AUDIENCE,
+            client_id=EP_CLIENT_ID,
+            command_id=row.id,
+            occurred_at=row.created_at,
+        )
         async with ExecutionPlaneHttpClient() as client:
-            await client.upsert_cluster_binding(source_integration_id=row.integration_id, **payload)
+            await client.submit_command(message)
     except Exception as exc:  # noqa: BLE001 — all delivery failures must retain the durable retry record
         retry_after = min(MAX_RETRY_SECONDS, 2 ** min(row.attempts, 8))
         retry_after = int(retry_after * secrets.SystemRandom().uniform(0.8, 1.2))

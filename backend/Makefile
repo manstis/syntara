@@ -799,6 +799,7 @@ reachability: ## Verify all standards docs are reachable from CLAUDE.md
 sync-requirements: ## Check/sync requirements.txt with uv.lock
 	@echo "🔍 Syncing requirements.txt with uv.lock..."
 	uv export --frozen --python=3.12 --no-dev --no-editable --no-emit-package pywin32 --no-emit-package colorama --no-emit-workspace --output-file requirements.txt
+	uv run python tools/ci/split_vcs_requirements.py
 	@echo "🔧 Filtering hashes to Linux x86_64/aarch64 only (for Hermeto prefetch)..."
 	uv run python tools/ci/filter_requirements_hashes.py
 	@echo "✅ requirements.txt is in sync"

@@ -1,6 +1,6 @@
 """The EP completion callback: route, view, and the logic that completes the activity.
 
-EP POSTs a completion event here when a work item finishes, and retries delivery
+EP POSTs a work.execute.completed command here when a work item finishes, and retries delivery
 until AO returns 2xx. The view completes the activity addressed by the work item
 UUID (= ``ActivityExecution.id``): it resolves that activity's
 ``(temporal_workflow_id, temporal_activity_id)`` and completes or fails it via the
@@ -11,13 +11,18 @@ activity is a Temporal no-op.
 
 from __future__ import annotations
 
-from datetime import datetime  # noqa: TC003 — Pydantic resolves model annotations at runtime
-from typing import Annotated, Any, Literal
+from dataclasses import dataclass
+from typing import Annotated, Any
 from uuid import UUID  # noqa: TC003 — Pydantic resolves model annotations at runtime
 
 import structlog
+from execution_plane_client import CommandCatalog, CommandRegistry
+from execution_plane_client.commands.control import Completion
+from execution_plane_client.errors import ProtocolConflict, UnsupportedCommand
+from execution_plane_client.handlers import HandlingResult
+from execution_plane_client.protocol import MessageEnvelope, ResourceReference, TransportReceipt
 from fastapi import Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import ValidationError
 from sqlmodel import col, select
 from sqlmodel.ext.asyncio.session import AsyncSession  # noqa: TC002 — FastAPI resolves dependency annotations
 from temporalio.exceptions import ApplicationError
@@ -25,6 +30,7 @@ from temporalio.exceptions import ApplicationError
 from syntara.core.config.base import get_settings
 from syntara.core.database.session import get_db
 from syntara.core.syntara_router import NO_PERMISSION, SyntaraRouter
+from syntara.execution_plane.client import EP_AUDIENCE, EP_CLIENT_ID
 from syntara.workflows.executions_router import get_temporal_execution_service
 from syntara.workflows.models.activity_execution import ActivityExecution
 from syntara.workflows.models.execution import Execution
@@ -35,19 +41,6 @@ from syntara.workflows.workflow_engine.services.temporal_execution_service impor
 logger = structlog.stdlib.get_logger(__name__)
 
 router = SyntaraRouter(prefix="/api/execution_plane/v1", tags=["Execution Plane"])
-
-
-class EPCompletionEvent(BaseModel):
-    """Authenticated result event delivered by the independent EP service."""
-
-    event_id: UUID
-    event_schema_version: Literal[1]
-    client_id: str
-    work_id: UUID
-    state_revision: int
-    status: Literal["completed", "failed", "cancelled", "reconciliation_required"]
-    result: dict[str, object]
-    completed_at: datetime
 
 
 def _failure_error(status: str, result: dict[str, Any]) -> ApplicationError:
@@ -110,37 +103,86 @@ async def _complete_activity(
     return True
 
 
+@dataclass(frozen=True)
+class CompletionContext:
+    """AO services needed to deliver a completion to Temporal."""
+
+    session: AsyncSession
+    temporal_service: TemporalExecutionService
+
+
+class CompletionCommandHandler:
+    """Resolve an AO activity using the completed work command's UUID."""
+
+    async def handle(self, message: MessageEnvelope, context: CompletionContext) -> HandlingResult:
+        """Apply the completion without retaining command history."""
+        completion = Completion.model_validate(message.command.payload)
+        work_id = message.command.parent_command_id
+        if work_id is None or (
+            completion.resource is not None
+            and (completion.resource.kind != "work_item" or completion.resource.resource_id != work_id)
+        ):
+            raise ProtocolConflict
+        statuses = {
+            "succeeded": "completed",
+            "failed": "failed",
+            "cancelled": "cancelled",
+            "outcome_unknown": "reconciliation_required",
+        }
+        delivered = await _complete_activity(
+            session=context.session,
+            temporal_service=context.temporal_service,
+            work_id=work_id,
+            status=statuses[completion.status],
+            result=completion.result,
+        )
+        if not delivered:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No matching AO activity for this work item"
+            )
+        logger.info(
+            "Delivered Execution Plane completion command", command_id=str(message.command_id), status=completion.status
+        )
+        return HandlingResult(ResourceReference(kind="work_item", resource_id=work_id))
+
+
+_catalog = CommandCatalog()
+_registry = CommandRegistry[CompletionContext]()
+_registry.register(_catalog.definition("work.execute.completed", 1), CompletionCommandHandler())
+
+
 @router.post(
     "/events",
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[NO_PERMISSION],
     operation_id="accept_execution_plane_event",
-    summary="Accept an Execution Plane completion event",
+    summary="Accept an Execution Plane completion command",
+    response_model=TransportReceipt,
 )
 async def accept_execution_plane_event(
     request: Request,
-    event: EPCompletionEvent,
+    message: MessageEnvelope,
     session: Annotated[AsyncSession, Depends(get_db)],
     temporal_service: Annotated[TemporalExecutionService | None, Depends(get_temporal_execution_service)],
-) -> dict[str, str]:
-    """Complete the AO async activity named by an EP completion callback; EP retries until 2xx."""
+) -> TransportReceipt:
+    """Authenticate a completion command and acknowledge it after Temporal delivery."""
     settings = get_settings()
     if (
         not getattr(request.state, "is_cert_authenticated", False)
         or getattr(request.state, "cert_cn", None) != settings.ep_callback_service_cn
+        or message.source_id != EP_AUDIENCE
+        or message.destination_id != EP_CLIENT_ID
+        or message.scope.client_id != EP_CLIENT_ID
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Execution Plane service identity required")
     if temporal_service is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Temporal is unavailable")
-
-    delivered = await _complete_activity(
-        session=session,
-        temporal_service=temporal_service,
-        work_id=event.work_id,
-        status=event.status,
-        result=event.result,
-    )
-    if not delivered:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching AO activity for this work item")
-    logger.info("Delivered Execution Plane completion event", event_id=str(event.event_id), status=event.status)
-    return {"status": "accepted"}
+    try:
+        _catalog.validate(message)
+        handler = _registry.get(message.command.command_type, message.command.command_revision)
+        result = await handler.handle(message, CompletionContext(session, temporal_service))
+    except (ValidationError, UnsupportedCommand, ProtocolConflict):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Invalid completion command"
+        ) from None
+    return TransportReceipt(message_id=message.message_id, resource=result.resource)

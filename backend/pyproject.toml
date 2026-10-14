@@ -72,6 +72,7 @@ dependencies = [
     "uuid-utils>=0.9.0",
     "pypdf>=6.19.0",
     "nh3>=0.2.21",
+    "execution-plane-client",
 ]
 
 [project.optional-dependencies]
@@ -137,6 +138,7 @@ constraint-dependencies = [
 syntara-api-client = { path = "src/api_client", editable = true }
 orchestrator-cli = { path = "src/cli", editable = true }
 orchestrator-test-sdk = { path = "test-sdk", editable = true }
+execution-plane-client = { git = "https://github.com/manstis/syntara-execution-plane.git", subdirectory = "src/execution_plane_client", rev = "56fa58456c00d459bc59c114bc40502e2d4e190c" }
 
 [project.scripts]
 orchestrator-admin = "syntara.orchestrator_admin:app"
