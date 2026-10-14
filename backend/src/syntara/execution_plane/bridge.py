@@ -12,7 +12,7 @@ activity is a Temporal no-op.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID  # noqa: TC003 — Pydantic resolves model annotations at runtime
 
 import structlog
@@ -37,6 +37,9 @@ from syntara.workflows.models.execution import Execution
 from syntara.workflows.workflow_engine.services.temporal_execution_service import (
     TemporalExecutionService,  # noqa: TC001 — FastAPI resolves dependency annotations
 )
+
+if TYPE_CHECKING:
+    from execution_plane_client.commands.base import CommandPayload
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -114,13 +117,16 @@ class CompletionContext:
 class CompletionCommandHandler:
     """Resolve an AO activity using the completed work command's UUID."""
 
-    async def handle(self, message: MessageEnvelope, context: CompletionContext) -> HandlingResult:
-        """Apply the completion without retaining command history."""
-        completion = Completion.model_validate(message.command.payload)
+    async def handle(
+        self, message: MessageEnvelope, payload: CommandPayload, context: CompletionContext
+    ) -> HandlingResult:
+        """Apply the validated completion without retaining command history."""
+        if not isinstance(payload, Completion):
+            raise UnsupportedCommand
         work_id = message.command.parent_command_id
         if work_id is None or (
-            completion.resource is not None
-            and (completion.resource.kind != "work_item" or completion.resource.resource_id != work_id)
+            payload.resource is not None
+            and (payload.resource.kind != "work_item" or payload.resource.resource_id != work_id)
         ):
             raise ProtocolConflict
         statuses = {
@@ -133,15 +139,15 @@ class CompletionCommandHandler:
             session=context.session,
             temporal_service=context.temporal_service,
             work_id=work_id,
-            status=statuses[completion.status],
-            result=completion.result,
+            status=statuses[payload.status],
+            result=payload.result,
         )
         if not delivered:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="No matching AO activity for this work item"
             )
         logger.info(
-            "Delivered Execution Plane completion command", command_id=str(message.command_id), status=completion.status
+            "Delivered Execution Plane completion command", command_id=str(message.command_id), status=payload.status
         )
         return HandlingResult(ResourceReference(kind="work_item", resource_id=work_id))
 
@@ -178,9 +184,9 @@ async def accept_execution_plane_event(
     if temporal_service is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Temporal is unavailable")
     try:
-        _catalog.validate(message)
+        payload = _catalog.validate(message)
         handler = _registry.get(message.command.command_type, message.command.command_revision)
-        result = await handler.handle(message, CompletionContext(session, temporal_service))
+        result = await handler.handle(message, payload, CompletionContext(session, temporal_service))
     except (ValidationError, UnsupportedCommand, ProtocolConflict):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Invalid completion command"

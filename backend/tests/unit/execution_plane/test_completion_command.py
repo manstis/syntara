@@ -53,16 +53,19 @@ def completion():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["succeeded", "failed", "cancelled", "outcome_unknown"])
-async def test_completion_command_resolves_temporal_activity_and_acknowledges(callback, outcome):
+async def test_completion_command_resolves_temporal_activity_and_acknowledges(callback, outcome, monkeypatch):
     app, temporal, _ = callback
     message = completion()
     body = message.model_dump(mode="json")
     body["command"]["payload"]["status"] = outcome
+    validate = MagicMock(wraps=Completion.model_validate)
+    monkeypatch.setattr(Completion, "model_validate", validate)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://ao") as client:
         response = await client.post("/api/execution_plane/v1/events", json=body)
     assert response.status_code == 202, response.text
     assert response.json()["message_id"] == str(message.message_id)
     assert response.json()["received"] is True
+    validate.assert_called_once()
     if outcome == "succeeded":
         temporal.complete_async_activity.assert_awaited_once_with(
             temporal_workflow_id="workflow-id", activity_id="activity-id", result={"output": {"stdout": "ok"}}
