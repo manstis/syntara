@@ -16,6 +16,7 @@ from syntara.workflows.workflow_engine.activities.ep import ep_dispatch_activity
 ACTIVITY_INFO_PATH = "syntara.workflows.workflow_engine.activities.ep.ep_dispatch_activity.activity.info"
 EXECUTION_ID = "00000000-0000-0000-0000-000000000010"
 WORK_ITEM_ID = UUID("00000000-0000-0000-0000-000000000020")
+EXECUTION_TARGET_ID = UUID("00000000-0000-0000-0000-000000000030")
 
 
 class _FakeEPClient:
@@ -121,6 +122,34 @@ class TestScriptActivityDispatch:
         assert result == expected
         assert len(_FakeEPClient.submissions) == 1
         assert _FakeEPClient.submissions[0].command_id == WORK_ITEM_ID
+
+    @pytest.mark.asyncio
+    async def test_execution_target_profile_is_sent_as_ep_selector(self) -> None:
+        """The selected Execution Target profile is routed through WorkExecute selectors."""
+        _FakeEPClient.responses = [{"id": str(WORK_ITEM_ID), "status": "completed", "result": {"output": {}}}]
+
+        await activity_module.execute_script_activity(
+            {
+                "language": "bash",
+                "code": ":",
+                "execution_profile": {
+                    "type": "execution_target",
+                    "execution_target_id": str(EXECUTION_TARGET_ID),
+                },
+            },
+            None,
+            EXECUTION_ID,
+        )
+
+        assert len(_FakeEPClient.submissions) == 1
+        command_payload = _FakeEPClient.submissions[0].command.payload
+        assert isinstance(command_payload, dict)
+        assert command_payload["selectors"] == {"_execution_target_id": str(EXECUTION_TARGET_ID)}
+        invocation = command_payload["invocation"]
+        assert isinstance(invocation, dict)
+        inputs = invocation["inputs"]
+        assert isinstance(inputs, dict)
+        assert "execution_profile" not in inputs
 
     @pytest.mark.asyncio
     async def test_pending_response_is_accepted_for_async_completion(self) -> None:

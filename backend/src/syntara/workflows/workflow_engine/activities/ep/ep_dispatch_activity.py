@@ -31,6 +31,8 @@ from syntara.workflows.workflow_engine.constants import (
 )
 from syntara.workflows.workflow_engine.models.workflow_definition import (
     ActivityName,
+    ExecutionPlaneExecutionProfile,
+    ExecutionTargetProfile,
     ScriptExecutorParameters,
 )
 
@@ -47,6 +49,8 @@ INITIAL_RETRY_DELAY_SECONDS = 0.5
 MAX_RETRY_DELAY_SECONDS = 10.0
 _NODE_TYPE = "script"
 _DEFAULT_TIMEOUT_SECONDS = 300
+_EXECUTION_PROFILE_FIELD = "execution_profile"
+_EXECUTION_TARGET_SELECTOR_FIELD = "_execution_target_id"
 
 
 def _build_invocation(input_config: dict[str, Any], settings: Any, info: Any) -> dict[str, Any]:  # noqa: ANN401
@@ -54,7 +58,11 @@ def _build_invocation(input_config: dict[str, Any], settings: Any, info: Any) ->
     return {
         "version": 1,
         "operation": "execute",
-        "inputs": {key: value for key, value in input_config.items() if not key.startswith("_")},
+        "inputs": {
+            key: value
+            for key, value in input_config.items()
+            if not key.startswith("_") and key != _EXECUTION_PROFILE_FIELD
+        },
         "credentials": {"resolved": {}},
         "workflow_context": {
             "workflow_id": info.workflow_id,
@@ -111,10 +119,25 @@ async def _submit_and_read_work(client: ExecutionPlaneHttpClient, message: Messa
     return await client.get_work_item(work_item_id=message.command_id)
 
 
+def _build_work_execute_selectors(execution_target_id: uuid.UUID | None) -> dict[str, str]:
+    """Build placement selectors for a selected Execution Target."""
+    if execution_target_id is None:
+        return {}
+    return {_EXECUTION_TARGET_SELECTOR_FIELD: str(execution_target_id)}
+
+
+def _execution_target_id(execution_profile: ExecutionPlaneExecutionProfile | None) -> uuid.UUID | None:
+    """Resolve the target UUID when the current profile selects an Execution Target."""
+    if isinstance(execution_profile, ExecutionTargetProfile):
+        return execution_profile.execution_target_id
+    return None
+
+
 async def _dispatch_to_ep(  # noqa: C901, PLR0915 - service handoff and Temporal retry policy
     input_config: dict[str, Any],
     output_config: dict[str, str] | None,
     execution_id: uuid.UUID,
+    execution_target_id: uuid.UUID | None,
 ) -> dict[str, Any] | None:
     """Submit a stable work command and recover existing work after an ambiguous retry."""
     settings = get_settings()
@@ -126,6 +149,7 @@ async def _dispatch_to_ep(  # noqa: C901, PLR0915 - service handoff and Temporal
         raise ApplicationError(msg, type="ContextError", non_retryable=True)
 
     work_item_id = await _lookup_activity_execution_id(execution_id, info.activity_id)
+    selectors = _build_work_execute_selectors(execution_target_id)
 
     image = settings.node_container_images.get(_NODE_TYPE)
     if not image:
@@ -135,6 +159,7 @@ async def _dispatch_to_ep(  # noqa: C901, PLR0915 - service handoff and Temporal
         message = WorkExecute(
             invocation=NodeInvocation.model_validate(_build_invocation(input_config, settings, info)),
             image=image,
+            selectors=selectors,
             output_config=output_config,
         ).to_message(
             source_id=EP_CLIENT_ID,
@@ -216,13 +241,18 @@ async def execute_script_activity(
         raise ApplicationError(msg, type="ScriptNodeDisabled", non_retryable=True)
 
     try:
-        ScriptExecutorParameters.model_validate(input_config)
+        config = ScriptExecutorParameters.model_validate(input_config)
         execution_uuid = uuid.UUID(execution_id)
     except Exception:  # noqa: BLE001
         msg = "Script activity configuration or execution ID is invalid"
         raise ApplicationError(msg, type="ConfigError", non_retryable=True) from None
 
-    result = await _dispatch_to_ep(input_config, output_config, execution_uuid)
+    result = await _dispatch_to_ep(
+        input_config,
+        output_config,
+        execution_uuid,
+        _execution_target_id(config.execution_profile),
+    )
     if result is None:
         raise_complete_async = cast("Callable[[], Any]", activity.raise_complete_async)
         raise_complete_async()
