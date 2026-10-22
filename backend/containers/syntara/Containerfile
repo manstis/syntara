@@ -52,7 +52,6 @@ RUN dnf install --setopt=install_weak_deps=0 --nodocs -y \
 COPY README.md alembic.ini ./
 COPY tools/ci/sanitize_pyproject_for_hermetic.py /usr/local/bin/sanitize_pyproject_for_hermetic.py
 COPY src/ ./src/
-
 RUN --mount=from=override,source=/,target=/tmp/override \
     if [ "$BRANDING" = "true" ] && [ -d /tmp/override/backend ]; then \
         cp -r /tmp/override/backend/. src/syntara/; \

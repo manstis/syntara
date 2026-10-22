@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
+from uuid import UUID
 
 import structlog
 from execution_plane_client.commands.clusters import ClusterRegister
@@ -13,9 +14,6 @@ from sqlalchemy import or_
 from sqlmodel import col, select
 
 from syntara.core.database.session import AsyncSessionLocal
-from syntara.core.services.secret_service import create_secret_service
-from syntara.credentials.exceptions import CredentialDisabledError
-from syntara.credentials.lib.injector_resolver import InjectorResolver
 from syntara.execution_plane.client import (
     EP_AUDIENCE,
     EP_CLIENT_ID,
@@ -23,7 +21,6 @@ from syntara.execution_plane.client import (
     ExecutionPlaneUnavailableError,
 )
 from syntara.execution_plane.integration_sync_model import ExecutionPlaneIntegrationSync
-from syntara.integrations.lib.credential_resolver import fetch_credential_with_type
 from syntara.integrations.models.integration import (
     ExecutionPlaneSyncStatus,
     Integration,
@@ -33,14 +30,12 @@ from syntara.integrations.models.integration import (
 )
 from syntara.integrations.models.integration_configuration import OpenShiftConfiguration
 
-if TYPE_CHECKING:
-    from uuid import UUID
-
 logger = structlog.stdlib.get_logger(__name__)
 
 POLL_SECONDS = 5
 LEASE_SECONDS = 60
 MAX_RETRY_SECONDS = 300
+EMPTY_CREDENTIAL_REF = UUID(int=0)
 
 
 async def _claim_outbox() -> list[ExecutionPlaneIntegrationSync]:
@@ -84,17 +79,7 @@ async def _desired_payload(row: ExecutionPlaneIntegrationSync) -> dict[str, Any]
                 raise ValueError(msg)
             credential_id = integration.management_credential_id
             if credential_id is None:
-                msg = "OpenShift management credential is required for EP synchronization"
-                raise ValueError(msg)
-            credential, credential_type = await fetch_credential_with_type(session, credential_id)
-            if not credential.enabled:
-                raise CredentialDisabledError(credential.name)
-            secret_service = create_secret_service(session)
-            secret_data = await secret_service.retrieve_secret(credential.secret_id)  # type: ignore[arg-type]
-            resolved = InjectorResolver.resolve(credential_type.injectors or {}, secret_data).extra_vars
-            secret = str(resolved.get("bearer_token") or resolved.get("token") or resolved.get("api_key") or "")
-            if not secret:
-                msg = "OpenShift credential did not resolve to an API token"
+                msg = "OpenShift management credential reference is required for EP synchronization"
                 raise ValueError(msg)
             if integration.scope is IntegrationScope.GLOBAL:
                 project_ids = None
@@ -111,7 +96,7 @@ async def _desired_payload(row: ExecutionPlaneIntegrationSync) -> dict[str, Any]
                 "name": integration.name,
                 "endpoint": configuration.base_url,
                 "namespace": configuration.namespace,
-                "credential": secret,
+                "credential_ref": credential_id,
                 "ca_certificate": configuration.ca_certificate,
                 "project_ids": project_ids,
                 "labels": labels,
@@ -122,7 +107,7 @@ async def _desired_payload(row: ExecutionPlaneIntegrationSync) -> dict[str, Any]
             "name": row.name,
             "endpoint": row.endpoint,
             "namespace": row.namespace,
-            "credential": "",
+            "credential_ref": EMPTY_CREDENTIAL_REF,
             "project_ids": [],
             "labels": {"integration_id": str(row.integration_id)},
             "enabled": False,

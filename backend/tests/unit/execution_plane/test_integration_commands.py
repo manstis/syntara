@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from execution_plane_client import CommandCatalog
+from execution_plane_client.catalog import CommandCatalog
 
 from syntara.execution_plane import integration_sync
 from syntara.execution_plane.integration_sync_model import ExecutionPlaneIntegrationSync
@@ -29,7 +29,7 @@ async def test_outbox_delivers_stable_command_and_retains_disabled_tombstone(mon
         "name": row.name,
         "endpoint": row.endpoint,
         "namespace": row.namespace,
-        "credential": "opaque-credential" if enabled else "",
+        "credential_ref": str(uuid4()) if enabled else "00000000-0000-0000-0000-000000000000",
         "project_ids": None if enabled else [],
         "labels": {},
         "enabled": enabled,

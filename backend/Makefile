@@ -367,7 +367,7 @@ ep-worker-run: check-deps _ensure-secrets _ensure-certs ## Run the standalone Ex
 	@cd $(EP_REPOSITORY) && \
 		EP_DATABASE_URL="$${EP_DATABASE_URL:-$(EP_DATABASE_RUNTIME_URL)}" \
 		EP_CREDENTIAL_ENCRYPTION_KEY_PATH="$(abspath .secrets/ep-credential-encryption-key)" \
-		EP_COMPLETION_CALLBACK_URL="$${EP_COMPLETION_CALLBACK_URL:-https://localhost:8000/api/execution_plane/v1/events}" \
+		EP_COMPLETION_CALLBACK_URL="$${EP_COMPLETION_CALLBACK_URL:-https://localhost:8000/api/execution_plane/v1/commands}" \
 		EP_NODE_STARTUP_SECONDS="$${EP_NODE_STARTUP_SECONDS:-120}" \
 		EP_NODE_GRACE_SECONDS="$${EP_NODE_GRACE_SECONDS:-30}" \
 		EP_WORKLOAD_ALLOWED_EGRESS_CIDRS="$${EP_WORKLOAD_ALLOWED_EGRESS_CIDRS:-[]}" \

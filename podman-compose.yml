@@ -461,10 +461,15 @@ services:
     environment:
       - EP_DATABASE_URL=postgresql+asyncpg://execution_plane_runtime:${EP_DB_RUNTIME_PASSWORD:-ep-runtime}@database:5432/execution_plane
       - EP_CREDENTIAL_ENCRYPTION_KEY_PATH=/run/secrets/ep-credential-encryption-key
-      - EP_COMPLETION_CALLBACK_URL=https://syntara:8000/api/execution_plane/v1/events
+      - EP_COMPLETION_CALLBACK_URL=https://syntara:8000/api/execution_plane/v1/commands
       - EP_CALLBACK_CA_CERT_PATH=/run/secrets/s2s-ca.pem
       - EP_CALLBACK_CERT_PATH=/run/secrets/ep-callback.crt
       - EP_CALLBACK_KEY_PATH=/run/secrets/ep-callback.key
+      - EP_CREDENTIAL_RESOLUTION_CALLBACK_URL=https://syntara:8000/api/execution_plane/v1/commands
+      - EP_CREDENTIAL_RESOLUTION_CALLBACK_CA_CERT_PATH=/run/secrets/s2s-ca.pem
+      - EP_CREDENTIAL_RESOLUTION_CALLBACK_CERT_PATH=/run/secrets/ep-callback.crt
+      - EP_CREDENTIAL_RESOLUTION_CALLBACK_KEY_PATH=/run/secrets/ep-callback.key
+      - EP_CREDENTIAL_RESOLUTION_CALLBACK_TIMEOUT_SECONDS=${EP_CREDENTIAL_RESOLUTION_CALLBACK_TIMEOUT_SECONDS:-10}
       - EP_NODE_STARTUP_SECONDS=${EP_NODE_STARTUP_SECONDS:-120}
       - EP_NODE_GRACE_SECONDS=${EP_NODE_GRACE_SECONDS:-30}
       - EP_WORKLOAD_ALLOWED_EGRESS_CIDRS=${EP_WORKLOAD_ALLOWED_EGRESS_CIDRS:-[]}

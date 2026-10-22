@@ -144,7 +144,7 @@ make lint
 Execution Plane is an independent service in the public
 [syntara-execution-plane repository](https://github.com/syntara-orchestration/syntara-execution-plane).
 AO installs the separate `execution-plane-client` contract library from the
-upstream `v0.1.0` Git tag declared in `pyproject.toml`. `uv.lock` records the resolved
+upstream `v0.1.4` Git tag declared in `pyproject.toml`. `uv.lock` records the resolved
 commit for reproducibility; `make install` fetches it automatically.
 `make sync-requirements` exports hashed packages to `requirements.txt` and pinned
 Git packages to `requirements-vcs.txt` for Hermeto's separate prefetch passes.
@@ -265,7 +265,7 @@ source revision. Full desired state, including disabled deletion records, allows
 EP's ClusterBinding reconciler to handle creation, updates and deletion even
 when requests arrive out of order. Observed status comes from `/v1/clusters/{id}`.
 
-The existing `/api/execution_plane/v1/events` callback URL now accepts
+The `/api/execution_plane/v1/commands` callback URL accepts
 `work.execute.completed` command envelopes. AO verifies the EP certificate and
 participant identities, resolves the parent work UUID to its Temporal activity,
 and returns a matching `TransportReceipt`. No command history is persisted.

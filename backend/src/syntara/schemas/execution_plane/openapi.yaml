@@ -75,13 +75,13 @@ paths:
       x-app-permission:
         resource: work_item
         action: read
-  /api/execution_plane/v1/events:
+  /api/execution_plane/v1/commands:
     post:
       tags:
         - Execution Plane
-      summary: Accept an Execution Plane completion command
-      description: Authenticate a completion command and acknowledge it after Temporal delivery.
-      operationId: accept_execution_plane_event
+      summary: Receive an Execution Plane command
+      description: Authenticate one command, dispatch it through the registry, and return its result.
+      operationId: receive_execution_plane_command
       requestBody:
         content:
           application/json:
@@ -89,12 +89,15 @@ paths:
               $ref: '#/components/schemas/MessageEnvelope'
         required: true
       responses:
-        '202':
+        '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TransportReceipt'
+                anyOf:
+                  - $ref: '#/components/schemas/TransportReceipt'
+                  - $ref: '#/components/schemas/CredentialResolution'
+                title: Response Receive Execution Plane Command
         '422':
           description: Validation Error
           content:
@@ -158,6 +161,24 @@ components:
         - client_id
       title: CommandScope
       description: Initiating service client; project authorization belongs to the caller.
+    CredentialResolution:
+      properties:
+        message_id:
+          type: string
+          format: uuid
+          title: Message Id
+        credential:
+          type: string
+          maxLength: 65536
+          minLength: 1
+          title: Credential
+      additionalProperties: false
+      type: object
+      required:
+        - message_id
+        - credential
+      title: CredentialResolution
+      description: The resolved credential value for one submitted command.
     ExecutionTargetFacadeRead:
       properties:
         id:

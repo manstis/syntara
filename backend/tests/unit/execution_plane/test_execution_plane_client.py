@@ -24,7 +24,7 @@ async def test_cluster_binding_request_keeps_namespace_as_kubernetes_integration
         name="workers",
         endpoint="https://cluster.example",
         namespace="ep-workers",
-        credential="opaque-credential",
+        credential_ref=uuid4(),
         project_ids=None,
         labels={"environment": "test"},
         enabled=True,

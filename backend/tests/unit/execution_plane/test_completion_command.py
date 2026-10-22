@@ -51,6 +51,10 @@ def completion():
     )
 
 
+def test_router_only_exposes_the_command_ingress():
+    assert {route.path for route in bridge.router.routes} == {"/api/execution_plane/v1/commands"}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["succeeded", "failed", "cancelled", "outcome_unknown"])
 async def test_completion_command_resolves_temporal_activity_and_acknowledges(callback, outcome, monkeypatch):
@@ -61,8 +65,8 @@ async def test_completion_command_resolves_temporal_activity_and_acknowledges(ca
     validate = MagicMock(wraps=Completion.model_validate)
     monkeypatch.setattr(Completion, "model_validate", validate)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://ao") as client:
-        response = await client.post("/api/execution_plane/v1/events", json=body)
-    assert response.status_code == 202, response.text
+        response = await client.post("/api/execution_plane/v1/commands", json=body)
+    assert response.status_code == 200, response.text
     assert response.json()["message_id"] == str(message.message_id)
     assert response.json()["received"] is True
     assert response.json()["resource"]["kind"] == "work_item"
@@ -88,7 +92,7 @@ async def test_completion_rejects_wrong_participant(callback, field):
     target = body["scope"] if field == "client_id" else body
     target[field] = "other-service"
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://ao") as client:
-        response = await client.post("/api/execution_plane/v1/events", json=body)
+        response = await client.post("/api/execution_plane/v1/commands", json=body)
     assert response.status_code == 403
     temporal.complete_async_activity.assert_not_awaited()
 
@@ -119,7 +123,7 @@ async def test_completion_rejects_invalid_correlation_or_command(callback, inval
         command["command_type"] = "command.cancel"
         command["payload"] = {"target_command_id": str(uuid4())}
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://ao") as client:
-        response = await client.post("/api/execution_plane/v1/events", json=body)
+        response = await client.post("/api/execution_plane/v1/commands", json=body)
     assert response.status_code == 422
     temporal.complete_async_activity.assert_not_awaited()
     temporal.fail_async_activity.assert_not_awaited()
@@ -130,7 +134,7 @@ async def test_completion_missing_activity_remains_retryable(callback):
     app, _, rows = callback
     rows.first.return_value = None
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://ao") as client:
-        response = await client.post("/api/execution_plane/v1/events", json=completion().model_dump(mode="json"))
+        response = await client.post("/api/execution_plane/v1/commands", json=completion().model_dump(mode="json"))
     assert response.status_code == 404
 
 
@@ -141,8 +145,8 @@ async def test_completion_without_resource_uses_parent_command_id(callback):
     body = message.model_dump(mode="json")
     body["command"]["payload"].pop("resource")
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://ao") as client:
-        response = await client.post("/api/execution_plane/v1/events", json=body)
-    assert response.status_code == 202, response.text
+        response = await client.post("/api/execution_plane/v1/commands", json=body)
+    assert response.status_code == 200, response.text
     assert response.json()["resource"]["kind"] == "work_item"
     assert response.json()["resource"]["resource_id"] == str(message.command.parent_command_id)
     temporal.complete_async_activity.assert_awaited_once()

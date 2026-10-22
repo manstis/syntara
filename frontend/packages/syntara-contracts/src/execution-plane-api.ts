@@ -44,7 +44,7 @@ export interface paths {
     patch?: never
     trace?: never
   }
-  '/api/execution_plane/v1/events': {
+  '/api/execution_plane/v1/commands': {
     parameters: {
       query?: never
       header?: never
@@ -54,10 +54,10 @@ export interface paths {
     get?: never
     put?: never
     /**
-     * Accept an Execution Plane completion command
-     * @description Authenticate a completion command and acknowledge it after Temporal delivery.
+     * Receive an Execution Plane command
+     * @description Authenticate one command, dispatch it through the registry, and return its result.
      */
-    post: operations['accept_execution_plane_event']
+    post: operations['receive_execution_plane_command']
     delete?: never
     options?: never
     head?: never
@@ -101,6 +101,19 @@ export interface components {
     CommandScope: {
       /** Client Id */
       client_id: string
+    }
+    /**
+     * CredentialResolution
+     * @description The resolved credential value for one submitted command.
+     */
+    CredentialResolution: {
+      /**
+       * Message Id
+       * Format: uuid
+       */
+      message_id: string
+      /** Credential */
+      credential: string
     }
     /**
      * ExecutionTargetFacadeRead
@@ -384,7 +397,7 @@ export interface operations {
       }
     }
   }
-  accept_execution_plane_event: {
+  receive_execution_plane_command: {
     parameters: {
       query?: never
       header?: never
@@ -398,12 +411,12 @@ export interface operations {
     }
     responses: {
       /** @description Successful Response */
-      202: {
+      200: {
         headers: {
           [name: string]: unknown
         }
         content: {
-          'application/json': components['schemas']['TransportReceipt']
+          'application/json': components['schemas']['TransportReceipt'] | components['schemas']['CredentialResolution']
         }
       }
       /** @description Validation Error */
