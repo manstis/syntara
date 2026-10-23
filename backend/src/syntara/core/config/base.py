@@ -1509,17 +1509,14 @@ class WorkflowEngineSettings(BaseSettings):
     # types (e.g. "script"); values are fully-qualified image refs the target
     # cluster can pull.
     #
-    # Only the script node is sent to EP in the first isolated release. Pin the
-    # node image by digest so Temporal retries cannot select changed code. The
-    # image is public but remains in a maintainer namespace until the publishing
-    # pipeline moves it to the organization; track that migration in the revisit
-    # decisions document.
+    # Only the script node is sent to EP in the first isolated release. The
+    # migration-test tag matches the image EP's Kind integration setup preloads
+    # into the cluster. The image is public but remains in a maintainer namespace
+    # until the publishing pipeline moves it to the organization; track that
+    # migration in the revisit decisions document.
     node_container_images: dict[str, str] = Field(
         default_factory=lambda: {
-            "script": (
-                "quay.io/ahetheri/syntara-node-script@sha256:"
-                "68bf485c8ee6ce986413fa3a6a91e384a2f98222f6b9b9734da79299f0b2bda0"
-            ),
+            "script": "quay.io/ahetheri/syntara-node-script:migration-test",
         },
         description="Node type to container image reference for Execution Plane dispatch",
     )

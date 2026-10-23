@@ -269,12 +269,12 @@ services:
       #   APP_SCRIPT_NODES_ENABLED — feature gate (ships False for security; the
       #     dev stack turns it on so script nodes work out of the box).
       #   APP_NODE_CONTAINER_IMAGES — node type -> container image. The first
-      #     release uses the same digest-pinned script image as the settings
+      #     release uses the same migration-test script image tag as the settings
       #     default; move it to organization-owned publishing when that pipeline
       #     is available.
       - APP_SCRIPT_NODES_ENABLED=${APP_SCRIPT_NODES_ENABLED:-true}
       - >-
-        APP_NODE_CONTAINER_IMAGES=${APP_NODE_CONTAINER_IMAGES:-{"script":"quay.io/ahetheri/syntara-node-script@sha256:68bf485c8ee6ce986413fa3a6a91e384a2f98222f6b9b9734da79299f0b2bda0"}}
+        APP_NODE_CONTAINER_IMAGES=${APP_NODE_CONTAINER_IMAGES:-{"script":"quay.io/ahetheri/syntara-node-script:migration-test"}}
       - APP_ENV_FILE_PATH=${APP_ENV_FILE_PATH:-.env}
       - APP_FALLBACK_LOG_LEVEL=${APP_FALLBACK_LOG_LEVEL:-INFO}
       - APP_CACHE_HOST=redis
