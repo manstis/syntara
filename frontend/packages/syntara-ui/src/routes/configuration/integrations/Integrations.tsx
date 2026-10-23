@@ -107,6 +107,7 @@ function IntegrationsTableContent({
           <Th width={10} sort={getSortParams('validation_status')}>
             Status
           </Th>
+          <Th width={10}>Execution Plane</Th>
           <Th width={10} sort={getSortParams('integration_type')}>
             Integration type
           </Th>

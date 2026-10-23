@@ -16,10 +16,23 @@
 # Run with:
 #   uv run podman-compose -p syntara \
 #     -f ../podman-compose.yml -f ../podman-compose.kind-demo.override.yml \
-#     up -d syntara temporal-worker execution-plane-worker
+#     up -d syntara temporal-worker temporal-background-worker execution-plane-worker
 services:
   syntara:
     # The API validates the Kubernetes endpoint during Integration creation.
+    networks:
+      - default
+      - kind
+
+  temporal-background-worker:
+    # Scheduled Integration health checks run here and must resolve the kind
+    # API hostname for the SSRF revalidation before calling OpenShift.
+    networks:
+      - default
+      - kind
+
+  temporal-worker:
+    # Workflow-triggered Integration validation also performs SSRF DNS checks.
     networks:
       - default
       - kind

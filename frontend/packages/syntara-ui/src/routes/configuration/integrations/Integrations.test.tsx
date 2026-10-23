@@ -349,6 +349,38 @@ describe('Integrations Component', () => {
       expect(typeCells.length).toBe(3)
     })
 
+    it('renders an Execution Plane header for OpenShift integrations', () => {
+      vi.mocked(integrationsClient.useQuery).mockReturnValueOnce({
+        data: {
+          resources: [
+            {
+              ...mockIntegrations[0],
+              name: 'OpenShift Cluster',
+              integration_type: 'openshift',
+              validation_status: IntegrationStatusEnum.VALIDATING,
+              execution_plane_status: 'ready',
+              configuration: {
+                integration_type: 'openshift',
+                base_url: 'https://api.openshift.example.com',
+              },
+            },
+          ],
+        },
+        isPending: false,
+        isError: false,
+        error: null,
+        refetch: vi.fn(),
+      })
+
+      render(<Integrations />, { wrapper })
+
+      expect(screen.getByRole('columnheader', { name: 'Execution Plane' })).toBeInTheDocument()
+      const dataRow = screen.getAllByRole('row')[1]
+      const dataCells = within(dataRow).getAllByRole('cell')
+      expect(dataCells[2]).toHaveTextContent('Ready')
+      expect(dataCells[3]).toHaveTextContent('OpenShift')
+    })
+
     it('renders tool count column', () => {
       render(<Integrations />, { wrapper })
 

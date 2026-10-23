@@ -227,10 +227,11 @@ make -C backend run-all-kind
 ```
 
 `run-all-kind` applies `podman-compose.kind-demo.override.yml`. The override
-attaches both `syntara` (needed for Integration endpoint validation) and
-`execution-plane-worker` to the external `kind` network while retaining the
-normal project network for database and Temporal connectivity. Recreate the
-stack after changing the override or the Integration endpoint.
+attaches `syntara`, `temporal-worker`, `temporal-background-worker` (all needed
+for Integration endpoint validation), and `execution-plane-worker` to the
+external `kind` network while retaining the normal project network for database
+and Temporal connectivity. Recreate the stack after changing the override or
+the Integration endpoint.
 
 When registering the OpenShift Integration in Syntara, use:
 
