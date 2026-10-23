@@ -200,11 +200,14 @@ Create the kind cluster and its workload namespace and ServiceAccount from the
 
 ```bash
 cd ../syntara-execution-plane
-KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name ep
-kubectl apply -f docs/feature-branch-assets/execution-plane-init.yaml
+kind create cluster --name ep
+kubectl config view --minify --raw \
+  -o jsonpath={.clusters[0].cluster.server}
+kubectl apply -f deploy/kubernetes/execution-target/rbac.yaml
 kubectl create token syntara-dispatcher -n execution-plane --duration=48h
 kubectl config view --minify --raw \
   -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d
+make image
 ```
 
 The `kubectl config view` server value is useful for host-side diagnostics, but
@@ -221,8 +224,9 @@ full stack:
 
 ```bash
 cd ../syntara
-make setup
+export EP_IMAGE='localhost/execution-plane:dev'
 export APP_INTEGRATION_URL_ALLOWED_HOSTS='["ep-control-plane", "mcp-server"]'
+make setup
 make -C backend run-all-kind
 ```
 
