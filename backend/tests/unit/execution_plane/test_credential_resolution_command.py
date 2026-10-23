@@ -19,6 +19,8 @@ from syntara.execution_plane.commands import credentials as command_credentials
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from execution_plane_client.protocol import MessageEnvelope
+
 
 @pytest.fixture
 def callback() -> tuple[FastAPI, AsyncMock]:
@@ -36,7 +38,7 @@ def callback() -> tuple[FastAPI, AsyncMock]:
     return app, session
 
 
-def credential_command() -> CredentialResolve:
+def credential_command() -> MessageEnvelope:
     return CredentialResolve(credential_ref=uuid4()).to_message(
         source_id="execution-plane",
         destination_id="syntara-orchestration",
