@@ -13,6 +13,7 @@ metadata:
       event == "pull_request" &&
       (target_branch == "devel" || target_branch.startsWith("feature/") || target_branch.startsWith("feat/")) &&
       (files.all.exists(x, x.startsWith("frontend/")) || files.all.exists(x, x.startsWith("backend/")) ||
+      files.all.exists(x, x.startsWith("tools/")) ||
       ".tekton/automation-orchestrator-ui-tests-devel-pull-request.yaml".pathChanged())
   creationTimestamp: null
   labels:
