@@ -17,8 +17,6 @@
 #   5. Registers the Kind cluster as an EP cluster via the EP API.
 #   6. Points myao-worker at the operator EP (APP_EP_API_URL) and pre-pulls
 #      the script-node image.
-#   7. Raises the Temporal server memory limit before AO API tests dispatch
-#      Bash-heavy workflows.
 #
 # CREDENTIAL_REF may name an existing AO credential that can access the Kind
 # cluster's dispatcher service account. When omitted, one is created or
@@ -45,8 +43,6 @@ EP_REPOSITORY="${EP_REPOSITORY:-${REPO_ROOT}/../syntara-execution-plane}"
 CREDENTIAL_REF="${CREDENTIAL_REF:-}"
 AO_API_BASE="${AO_API_BASE:-https://127.0.0.1:8443}"
 WORK_DIR=""
-TEMPORAL_MEMORY_REQUEST="${TEMPORAL_MEMORY_REQUEST:-8Gi}"
-TEMPORAL_MEMORY_LIMIT="${TEMPORAL_MEMORY_LIMIT:-8Gi}"
 
 if [[ ! -f "${KUBECONFIG}" ]]; then
   echo "ERROR: kubeconfig not found: ${KUBECONFIG}" >&2
@@ -181,13 +177,6 @@ _wait_for_operator_ep() {
     exit 1
   fi
   kubectl get pods -n "${AO_NAMESPACE}" -l "app.kubernetes.io/component in (execution-plane-api,execution-plane-worker)" -o wide
-}
-
-_configure_temporal_resources() {
-  echo "=== Configure Temporal memory (request ${TEMPORAL_MEMORY_REQUEST}, limit ${TEMPORAL_MEMORY_LIMIT}) ==="
-  kubectl patch automationorchestrator "${AO_NAME}" -n "${AO_NAMESPACE}" --type=merge \
-    -p "{\"spec\":{\"temporal\":{\"server\":{\"resources\":{\"requests\":{\"memory\":\"${TEMPORAL_MEMORY_REQUEST}\"},\"limits\":{\"memory\":\"${TEMPORAL_MEMORY_LIMIT}\"}}}}}}"
-  kubectl rollout status "deploy/${AO_NAME}-temporal" -n "${AO_NAMESPACE}" --timeout=300s
 }
 
 _configure_ep_callback_url() {
@@ -464,8 +453,6 @@ chmod 700 "${WORK_DIR}"
 trap _cleanup EXIT
 
 _require_operator_ep_opt_in
-
-_configure_temporal_resources
 
 echo "=== Verify ${NAMESPACE} (applied by aap-dev, AAP-99675) ==="
 kubectl get namespace "${NAMESPACE}"
